@@ -30,33 +30,42 @@ impl Filter {
             return true;
         }
 
-        let mut checks: Vec<bool> = Vec::new();
+        let mut groups: Vec<bool> = Vec::new();
 
+        // -on/-from/-to jointly define a single date range and are always
+        // ANDed with each other (independent of --and), since otherwise
+        // "--from X --to Y" in the default OR mode would be satisfied by
+        // almost every entry (anything >= X, OR anything <= Y).
+        let mut date_checks: Vec<bool> = Vec::new();
         if let Some(on) = &self.on {
-            checks.push(entry.date_only() == on.date());
+            date_checks.push(entry.date_only() == on.date());
         }
         if let Some(from) = &self.from {
-            checks.push(entry.date >= *from);
+            date_checks.push(entry.date >= *from);
         }
         if let Some(to) = &self.to {
-            checks.push(entry.date <= *to);
+            date_checks.push(entry.date <= *to);
         }
+        if !date_checks.is_empty() {
+            groups.push(date_checks.into_iter().all(|c| c));
+        }
+
         if let Some(text) = &self.contains {
             let needle = text.to_lowercase();
             let haystack = format!("{} {}", entry.title, entry.body).to_lowercase();
-            checks.push(haystack.contains(&needle));
+            groups.push(haystack.contains(&needle));
         }
         if self.starred {
-            checks.push(entry.starred);
+            groups.push(entry.starred);
         }
         if self.tagged {
-            checks.push(!entry.tags().is_empty());
+            groups.push(!entry.tags().is_empty());
         }
 
         if self.and {
-            checks.into_iter().all(|c| c)
+            groups.into_iter().all(|c| c)
         } else {
-            checks.into_iter().any(|c| c)
+            groups.into_iter().any(|c| c)
         }
     }
 
@@ -186,5 +195,68 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "B.");
         assert_eq!(result[1].title, "C.");
+    }
+
+    #[test]
+    fn test_from_and_to_form_a_range_not_or() {
+        // Regression test: --from X --to Y should mean "X <= date <= Y",
+        // not "date >= X OR date <= Y" (which would match almost everything
+        // when Y is in the past relative to X... and vice versa).
+        let entries = vec![
+            entry("2024-01-01 09:00", false, "Before range.", ""),
+            entry("2024-01-15 09:00", false, "In range.", ""),
+            entry("2024-02-01 09:00", false, "After range.", ""),
+        ];
+        let f = Filter {
+            from: Some(NaiveDateTime::parse_from_str("2024-01-10 00:00", "%Y-%m-%d %H:%M").unwrap()),
+            to: Some(NaiveDateTime::parse_from_str("2024-01-20 23:59", "%Y-%m-%d %H:%M").unwrap()),
+            ..Default::default()
+        };
+        let result = f.apply(&entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "In range.");
+    }
+
+    #[test]
+    fn test_from_to_range_combines_with_other_filter_via_or() {
+        // --from/--to define a range; in default (OR) mode that range
+        // combines with other filter types (e.g. --starred) via OR.
+        let entries = vec![
+            // Outside the date range, but starred -> should still match via OR.
+            entry("2023-01-01 09:00", true, "Old starred.", ""),
+            // Inside the date range, not starred -> matches via the range.
+            entry("2024-01-15 09:00", false, "In range.", ""),
+            // Outside the date range, not starred -> matches neither.
+            entry("2025-01-01 09:00", false, "Out of range.", ""),
+        ];
+        let f = Filter {
+            from: Some(NaiveDateTime::parse_from_str("2024-01-10 00:00", "%Y-%m-%d %H:%M").unwrap()),
+            to: Some(NaiveDateTime::parse_from_str("2024-01-20 23:59", "%Y-%m-%d %H:%M").unwrap()),
+            starred: true,
+            ..Default::default()
+        };
+        let result = f.apply(&entries);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|e| e.title == "Old starred."));
+        assert!(result.iter().any(|e| e.title == "In range."));
+    }
+
+    #[test]
+    fn test_from_to_range_combines_with_other_filter_via_and() {
+        let entries = vec![
+            entry("2023-01-01 09:00", true, "Old starred.", ""),
+            entry("2024-01-15 09:00", false, "In range, not starred.", ""),
+            entry("2024-01-16 09:00", true, "In range and starred.", ""),
+        ];
+        let f = Filter {
+            from: Some(NaiveDateTime::parse_from_str("2024-01-10 00:00", "%Y-%m-%d %H:%M").unwrap()),
+            to: Some(NaiveDateTime::parse_from_str("2024-01-20 23:59", "%Y-%m-%d %H:%M").unwrap()),
+            starred: true,
+            and: true,
+            ..Default::default()
+        };
+        let result = f.apply(&entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "In range and starred.");
     }
 }
