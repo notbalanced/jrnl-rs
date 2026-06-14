@@ -80,9 +80,12 @@ fn cmd_list_journals(config: &Config, format: Option<FormatType>) -> Result<()> 
     Ok(())
 }
 
-/// Add a new entry. Splits an optional date prefix (e.g. "yesterday: text")
-/// and a leading "*" for starred entries.
-fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
+/// Parse free-form entry text (as typed on the command line, via stdin, or
+/// written into a blank editor buffer) into an Entry. Handles an optional
+/// leading date/time expression (e.g. "yesterday 10pm:", "6/1/2026 10am:"),
+/// an optional leading "*" for starred entries, and splits the remainder
+/// into title (up to and including the first '.', '?', or '!') and body.
+fn parse_free_text_entry(text: &str) -> Entry {
     let (date, rest) = date_parser::split_date_prefix(text);
     let date = date.unwrap_or_else(|| Local::now().naive_local());
 
@@ -92,11 +95,23 @@ fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
     };
 
     let (title, body) = split_title_body(rest);
+    Entry::new(date, starred, title, body)
+}
 
+/// Add a new entry. Splits an optional date prefix (e.g. "yesterday: text")
+/// and a leading "*" for starred entries.
+fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
     let entry = if let Some(template_path) = &cli.template {
+        let (date, rest) = date_parser::split_date_prefix(text);
+        let date = date.unwrap_or_else(|| Local::now().naive_local());
+        let (starred, rest) = match rest.strip_prefix('*') {
+            Some(r) => (true, r),
+            None => (false, rest),
+        };
+        let (title, body) = split_title_body(rest);
         apply_template(template_path, date, starred, &title, &body)?
     } else {
-        Entry::new(date, starred, title, body)
+        parse_free_text_entry(text)
     };
 
     journal.add_entry(&entry)?;
@@ -172,13 +187,7 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
             return Ok(());
         }
 
-        let date = Local::now().naive_local();
-        let (starred, rest) = match raw.trim_start().strip_prefix('*') {
-            Some(r) => (true, r),
-            None => (false, raw.trim_start()),
-        };
-        let (title, body) = split_title_body(rest);
-        let entry = Entry::new(date, starred, title, body);
+        let entry = parse_free_text_entry(raw.trim());
         journal.add_entry(&entry)?;
         println!("Entry added to journal.");
         return Ok(());
@@ -193,13 +202,7 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
         println!("No input given, nothing saved.");
         return Ok(());
     }
-    let date = Local::now().naive_local();
-    let (starred, rest) = match buf.trim_start().strip_prefix('*') {
-        Some(r) => (true, r),
-        None => (false, buf.trim_start()),
-    };
-    let (title, body) = split_title_body(rest);
-    let entry = Entry::new(date, starred, title, body);
+    let entry = parse_free_text_entry(buf.trim());
     journal.add_entry(&entry)?;
     println!("Entry added to journal.");
     Ok(())
@@ -351,6 +354,29 @@ fn cmd_edit(config: &Config, journal: &Journal, all_entries: &[Entry], matched: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_free_text_entry_with_us_date_and_am_pm() {
+        let entry = parse_free_text_entry("6/1/2026 10am: Test entry.\nOlder entry.");
+        assert_eq!(entry.date.date(), chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap());
+        assert_eq!(entry.date.time(), chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        assert_eq!(entry.title, "Test entry.");
+        assert_eq!(entry.body, "Older entry.");
+    }
+
+    #[test]
+    fn test_parse_free_text_entry_no_date_prefix() {
+        let entry = parse_free_text_entry("Just a note. With a body.");
+        assert_eq!(entry.title, "Just a note.");
+        assert_eq!(entry.body, "With a body.");
+    }
+
+    #[test]
+    fn test_parse_free_text_entry_starred() {
+        let entry = parse_free_text_entry("yesterday: *Big news! Got it.");
+        assert!(entry.starred);
+        assert_eq!(entry.title, "Big news!");
+    }
 
     #[test]
     fn test_split_title_body_basic() {
