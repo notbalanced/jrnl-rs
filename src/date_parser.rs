@@ -6,42 +6,131 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 ///  - weekday names ("monday", "last friday") -> most recent past occurrence
 ///  - "YYYY-MM-DD", "YYYY-MM-DD HH:MM"
 ///  - "MM/DD/YYYY"
-/// Returns the start-of-day NaiveDateTime unless a time component is given.
+///  - "Month Day, Year"
+///  - any of the above followed by a time-of-day: "10am", "10:30pm", "22:00"
+///    e.g. "yesterday 10pm", "2024-01-15 10am", "monday 9:30am"
+///  - a bare time-of-day on its own ("10am") -> today at that time
+/// Returns the start-of-day NaiveDateTime if no time component is given.
 pub fn parse_date(input: &str) -> Option<NaiveDateTime> {
     let s = input.trim().to_lowercase();
     let now = Local::now().naive_local();
 
-    match s.as_str() {
-        "today" => return Some(now.date().and_time(NaiveTime::MIN)),
-        "yesterday" => return Some((now.date() - chrono::Duration::days(1)).and_time(NaiveTime::MIN)),
-        "tomorrow" => return Some((now.date() + chrono::Duration::days(1)).and_time(NaiveTime::MIN)),
+    // Split off a trailing time-of-day token, if present.
+    let (date_part, time_part) = split_trailing_time(&s);
+
+    // A bare time with no date part -> today at that time.
+    if date_part.is_empty() {
+        return time_part.map(|t| now.date().and_time(t));
+    }
+
+    let base_date = parse_date_part(date_part, now)?;
+    match time_part {
+        Some(t) => Some(base_date.and_time(t)),
+        None => Some(base_date.and_time(NaiveTime::MIN)),
+    }
+}
+
+/// Try to split `s` into (date_part, Some(time)) by checking if the trailing
+/// whitespace-delimited token (or the whole string) parses as a time-of-day.
+/// Returns (date_part, None) if no trailing time token is found.
+fn split_trailing_time(s: &str) -> (&str, Option<NaiveTime>) {
+    // Try the whole string as a time first (handles bare "10am").
+    if let Some(t) = parse_time_of_day(s) {
+        return ("", Some(t));
+    }
+
+    // Otherwise, try splitting off the last whitespace-separated token.
+    if let Some(idx) = s.rfind(' ') {
+        let (head, tail) = (&s[..idx], s[idx + 1..].trim());
+        if let Some(t) = parse_time_of_day(tail) {
+            return (head.trim(), Some(t));
+        }
+    }
+
+    (s, None)
+}
+
+/// Parse a single time-of-day token: "10am", "10pm", "10:30am", "10:30pm",
+/// "22:00", "9:00". Returns None if the token doesn't look like a time.
+fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // 12-hour with am/pm, optional minutes: "10am", "10:30pm"
+    if let Some(meridiem_idx) = s.find(|c: char| c == 'a' || c == 'p') {
+        // ensure the suffix is exactly "am" or "pm"
+        let suffix = &s[meridiem_idx..];
+        if suffix == "am" || suffix == "pm" {
+            let time_str = &s[..meridiem_idx];
+            let (hour, minute) = if let Some((h, m)) = time_str.split_once(':') {
+                (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)
+            } else {
+                (time_str.parse::<u32>().ok()?, 0)
+            };
+            if hour == 0 || hour > 12 || minute > 59 {
+                return None;
+            }
+            let hour24 = match (hour, suffix) {
+                (12, "am") => 0,
+                (12, "pm") => 12,
+                (h, "am") => h,
+                (h, "pm") => h + 12,
+                _ => unreachable!(),
+            };
+            return NaiveTime::from_hms_opt(hour24, minute, 0);
+        }
+        return None;
+    }
+
+    // 24-hour "HH:MM"
+    if let Some((h, m)) = s.split_once(':') {
+        let hour = h.parse::<u32>().ok()?;
+        let minute = m.parse::<u32>().ok()?;
+        if hour > 23 || minute > 59 {
+            return None;
+        }
+        return NaiveTime::from_hms_opt(hour, minute, 0);
+    }
+
+    None
+}
+
+/// Parse the date-only portion of an expression (everything except a
+/// trailing time-of-day, already stripped by `split_trailing_time`).
+fn parse_date_part(s: &str, now: NaiveDateTime) -> Option<NaiveDate> {
+    match s {
+        "today" => return Some(now.date()),
+        "yesterday" => return Some(now.date() - chrono::Duration::days(1)),
+        "tomorrow" => return Some(now.date() + chrono::Duration::days(1)),
         _ => {}
     }
 
     // "last <weekday>" or bare "<weekday>" -> most recent past occurrence (not today)
-    let weekday_part = s.strip_prefix("last ").unwrap_or(&s);
+    let weekday_part = s.strip_prefix("last ").unwrap_or(s);
     if let Some(wd) = parse_weekday(weekday_part) {
-        return Some(most_recent_weekday(now.date(), wd).and_time(NaiveTime::MIN));
+        return Some(most_recent_weekday(now.date(), wd));
     }
 
-    // Try "YYYY-MM-DD HH:MM"
-    if let Ok(dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M") {
-        return Some(dt);
+    // "YYYY-MM-DD HH:MM" (24-hour datetime given directly, no separate time token)
+    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M") {
+        return Some(dt.date());
     }
 
-    // Try "YYYY-MM-DD"
-    if let Ok(d) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
-        return Some(d.and_time(NaiveTime::MIN));
+    // "YYYY-MM-DD"
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d);
     }
 
-    // Try "MM/DD/YYYY"
-    if let Ok(d) = NaiveDate::parse_from_str(&s, "%m/%d/%Y") {
-        return Some(d.and_time(NaiveTime::MIN));
+    // "MM/DD/YYYY"
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%m/%d/%Y") {
+        return Some(d);
     }
 
-    // Try "Month Day, Year" e.g. "January 15, 2024"
-    if let Ok(d) = NaiveDate::parse_from_str(&s, "%B %d, %Y") {
-        return Some(d.and_time(NaiveTime::MIN));
+    // "Month Day, Year" e.g. "January 15, 2024"
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%B %d, %Y") {
+        return Some(d);
     }
 
     None
@@ -70,18 +159,28 @@ fn most_recent_weekday(from: NaiveDate, target: Weekday) -> NaiveDate {
     }
 }
 
-/// Given an entry text like "yesterday: Did some stuff." or just "Did some stuff.",
-/// split off a leading date expression (followed by ':') if present.
-/// Returns (Option<date>, remaining_text).
+/// Given an entry text like "yesterday: Did some stuff." or
+/// "6/6/2026 10:00: Older entry.", split off a leading date expression
+/// (followed by ':') if present. Returns (Option<date>, remaining_text).
+///
+/// Since date expressions can themselves contain colons (e.g. "10:00"),
+/// every ':' position is tried as a possible split point, and the longest
+/// (rightmost) candidate that parses as a valid date wins.
 pub fn split_date_prefix(text: &str) -> (Option<NaiveDateTime>, &str) {
-    if let Some(idx) = text.find(':') {
+    let mut best: Option<(NaiveDateTime, &str)> = None;
+
+    for (idx, _) in text.match_indices(':') {
         let candidate = &text[..idx];
         if let Some(date) = parse_date(candidate) {
             let rest = text[idx + 1..].trim_start();
-            return (Some(date), rest);
+            best = Some((date, rest));
         }
     }
-    (None, text)
+
+    match best {
+        Some((date, rest)) => (Some(date), rest),
+        None => (None, text),
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +230,114 @@ mod tests {
     fn test_month_name() {
         let d = parse_date("January 15, 2024").unwrap();
         assert_eq!(d.date(), NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
+    }
+
+    #[test]
+    fn test_bare_time_am() {
+        let d = parse_date("10am").unwrap();
+        let today = Local::now().naive_local().date();
+        assert_eq!(d.date(), today);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_bare_time_pm() {
+        let d = parse_date("10pm").unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(22, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_bare_time_with_minutes() {
+        let d = parse_date("10:30pm").unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(22, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_12am_is_midnight() {
+        let d = parse_date("12am").unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_12pm_is_noon() {
+        let d = parse_date("12pm").unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_yesterday_with_time() {
+        let d = parse_date("yesterday 10pm").unwrap();
+        let yesterday = Local::now().naive_local().date() - chrono::Duration::days(1);
+        assert_eq!(d.date(), yesterday);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(22, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_iso_date_with_am_pm_time() {
+        let d = parse_date("2024-01-15 10am").unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_iso_datetime_still_works() {
+        // "YYYY-MM-DD HH:MM" should still parse correctly now that the time
+        // is split off and re-attached.
+        let d = parse_date("2024-01-15 09:30").unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_split_date_prefix_with_time() {
+        let (date, rest) = split_date_prefix("yesterday 10pm: Did stuff.");
+        assert!(date.is_some());
+        assert_eq!(date.unwrap().time(), NaiveTime::from_hms_opt(22, 0, 0).unwrap());
+        assert_eq!(rest, "Did stuff.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_bare_time() {
+        let (date, rest) = split_date_prefix("10am: Morning thoughts.");
+        assert!(date.is_some());
+        assert_eq!(date.unwrap().time(), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        assert_eq!(rest, "Morning thoughts.");
+    }
+
+    #[test]
+    fn test_invalid_time_not_misparsed() {
+        // "25am" isn't a valid hour, shouldn't be parsed as a time.
+        assert!(parse_date("25am").is_none());
+        // "13pm" is out of 12-hour range.
+        assert!(parse_date("13pm").is_none());
+    }
+
+    #[test]
+    fn test_split_date_prefix_us_date_with_colon_time() {
+        let (date, rest) = split_date_prefix("6/6/2026 10:00: Older entry.");
+        assert!(date.is_some());
+        let d = date.unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 6, 6).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        assert_eq!(rest, "Older entry.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_us_date_padded_with_colon_time() {
+        let (date, rest) = split_date_prefix("06/06/2026 10:00: Older entry.");
+        assert!(date.is_some());
+        let d = date.unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 6, 6).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        assert_eq!(rest, "Older entry.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_iso_with_colon_time() {
+        let (date, rest) = split_date_prefix("2024-01-15 09:30: Meeting notes.");
+        assert!(date.is_some());
+        let d = date.unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+        assert_eq!(rest, "Meeting notes.");
     }
 }
