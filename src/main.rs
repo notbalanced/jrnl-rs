@@ -1,3 +1,4 @@
+mod args;
 mod cli;
 mod config;
 mod date_parser;
@@ -25,7 +26,25 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let prog = raw_args.first().cloned().unwrap_or_else(|| "jrnl".to_string());
+    let rest = &raw_args[1.min(raw_args.len())..];
+
+    // Load a lightweight config first (honoring --config-file if present)
+    // just to know which journal names are configured, so we can recognize
+    // a journal-name argument no matter where it appears relative to flags
+    // (e.g. `jrnl work --from 2026-01-01 --edit` as well as
+    // `jrnl --from 2026-01-01 --edit work`).
+    let config_file_arg = args::find_config_file_arg(rest);
+    let detection_config = Config::load(config_file_arg.as_deref())?;
+    let journal_names: std::collections::HashSet<String> =
+        detection_config.journals.keys().cloned().collect();
+
+    let (modified_args, extracted_journal) = args::extract_journal_name(rest, &journal_names);
+
+    let mut full_args = vec![prog];
+    full_args.extend(modified_args);
+    let cli = Cli::parse_from(full_args);
 
     // Load config (with optional override path).
     let mut config = Config::load(cli.config_file.as_deref())?;
@@ -44,10 +63,14 @@ fn run() -> Result<()> {
         return cmd_list_journals(&config, cli.format);
     }
 
-    // If the first word of the entry text matches a configured journal name
-    // (e.g. `jrnl work ...`), use that journal and strip the name from the
-    // text. Otherwise fall back to "default".
-    let (journal_name, text_args) = resolve_journal_name(&config, cli.text.clone());
+    // Determine which journal to use: prefer the journal name extracted from
+    // argv above (works regardless of flag order); otherwise fall back to
+    // checking the first word of the entry text (covers the simple
+    // `jrnl work ...` case if it wasn't already caught above).
+    let (journal_name, text_args) = match extracted_journal {
+        Some(name) => (name, cli.text.clone()),
+        None => resolve_journal_name(&config, cli.text.clone()),
+    };
 
     let journal_cfg = config.get_journal(&journal_name)?;
     let journal = Journal::from_config(journal_cfg);
