@@ -5,18 +5,24 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 ///  - "today", "yesterday", "tomorrow"
 ///  - weekday names ("monday", "last friday") -> most recent past occurrence
 ///  - "YYYY-MM-DD", "YYYY-MM-DD HH:MM"
-///  - "MM/DD/YYYY"
+///  - "MM/DD/YYYY", "MM-DD-YYYY"
 ///  - "Month Day, Year"
 ///  - any of the above followed by a time-of-day: "10am", "10:30pm", "22:00"
 ///    e.g. "yesterday 10pm", "2024-01-15 10am", "monday 9:30am"
+///  - the word "at" between a date and time is ignored, e.g.
+///    "yesterday at 9:15am", "friday at 6pm", "2026-05-23 at 17:30"
 ///  - a bare time-of-day on its own ("10am") -> today at that time
 /// Returns the start-of-day NaiveDateTime if no time component is given.
 pub fn parse_date(input: &str) -> Option<NaiveDateTime> {
     let s = input.trim().to_lowercase();
+    // "at" is just a connector word between a date and a time
+    // (e.g. "yesterday at 9am", "2026-05-23 at 17:30") -- drop it.
+    let s = s.replace(" at ", " ");
+    let s = s.trim();
     let now = Local::now().naive_local();
 
     // Split off a trailing time-of-day token, if present.
-    let (date_part, time_part) = split_trailing_time(&s);
+    let (date_part, time_part) = split_trailing_time(s);
 
     // A bare time with no date part -> today at that time.
     if date_part.is_empty() {
@@ -125,6 +131,11 @@ fn parse_date_part(s: &str, now: NaiveDateTime) -> Option<NaiveDate> {
 
     // "MM/DD/YYYY"
     if let Ok(d) = NaiveDate::parse_from_str(s, "%m/%d/%Y") {
+        return Some(d);
+    }
+
+    // "MM-DD-YYYY"
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%m-%d-%Y") {
         return Some(d);
     }
 
@@ -339,5 +350,57 @@ mod tests {
         let d = date.unwrap();
         assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
         assert_eq!(rest, "Meeting notes.");
+    }
+
+    #[test]
+    fn test_yesterday_at_time() {
+        let d = parse_date("yesterday at 9:15am").unwrap();
+        let yesterday = Local::now().naive_local().date() - chrono::Duration::days(1);
+        assert_eq!(d.date(), yesterday);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 15, 0).unwrap());
+    }
+
+    #[test]
+    fn test_weekday_at_time() {
+        let d = parse_date("friday at 6pm").unwrap();
+        assert_eq!(d.date().weekday(), chrono::Weekday::Fri);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(18, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_us_slash_date_at_time() {
+        let d = parse_date("6/2/2026 at 4:30am").unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 6, 2).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(4, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_us_dash_date_with_time() {
+        let d = parse_date("06-05-2025 09:30").unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2025, 6, 5).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_iso_date_at_24h_time() {
+        let d = parse_date("2026-05-23 at 17:30").unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 5, 23).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(17, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_split_date_prefix_all_user_examples() {
+        let cases: Vec<(&str, &str)> = vec![
+            ("yesterday at 9:15am: Note one.", "Note one."),
+            ("friday at 6pm: Note two.", "Note two."),
+            ("6/2/2026 at 4:30am: Note three.", "Note three."),
+            ("06-05-2025 09:30: Note four.", "Note four."),
+            ("2026-05-23 at 17:30: Note five.", "Note five."),
+        ];
+        for (input, expected_rest) in cases {
+            let (date, rest) = split_date_prefix(input);
+            assert!(date.is_some(), "failed to parse date for input: {}", input);
+            assert_eq!(rest, expected_rest, "wrong remainder for input: {}", input);
+        }
     }
 }
