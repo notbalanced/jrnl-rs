@@ -163,8 +163,13 @@ fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
 /// and a body (the remainder).
 fn split_title_body(text: &str) -> (String, String) {
     let text = text.trim();
+
+    if let Some((title, body)) = text.split_once('\n') {
+        return (title.trim().to_string(), body.trim().to_string());
+    }
+
     for (i, c) in text.char_indices() {
-        if c == '.' || c == '?' || c == '!' {
+        if (c == '.' || c == '?' || c == '!') && should_split_title_at(text, i) {
             let split_at = i + c.len_utf8();
             let title = text[..split_at].trim().to_string();
             let body = text[split_at..].trim().to_string();
@@ -172,6 +177,34 @@ fn split_title_body(text: &str) -> (String, String) {
         }
     }
     (text.to_string(), String::new())
+}
+
+fn should_split_title_at(text: &str, index: usize) -> bool {
+    let c = text[index..].chars().next().unwrap_or_default();
+
+    let remainder = &text[index + c.len_utf8()..];
+    let remainder = remainder.trim_start_matches(char::is_whitespace);
+    if remainder.is_empty() {
+        return false;
+    }
+
+    if c == '.' {
+        let prev = text[..index].chars().next_back();
+        let next = remainder.chars().next();
+
+        if prev.map(|ch| ch.is_ascii_digit()).unwrap_or(false)
+            && next.map(|ch| ch.is_ascii_digit()).unwrap_or(false)
+        {
+            return false;
+        }
+
+        let next_char = remainder.chars().next().unwrap();
+        return next_char.is_ascii_uppercase()
+            || matches!(next_char, '"' | '\'' | '(' | '[' | '{');
+    }
+
+    let next_char = remainder.chars().next().unwrap();
+    matches!(c, '?' | '!') && (next_char.is_ascii_uppercase() || matches!(next_char, '"' | '\'' | '(' | '[' | '{'))
 }
 
 fn apply_template(
@@ -504,5 +537,36 @@ mod tests {
         let (title, body) = split_title_body("Did it work? Yes it did.");
         assert_eq!(title, "Did it work?");
         assert_eq!(body, "Yes it did.");
+    }
+
+    #[test]
+    fn test_split_title_body_keeps_numeric_title_text_intact() {
+        let (title, body) = split_title_body(
+            "Here's another test - 1.2 plus 2.3 mi. equals 5.1.1 time 3. Here's where the body starts.",
+        );
+        assert_eq!(
+            title,
+            "Here's another test - 1.2 plus 2.3 mi. equals 5.1.1 time 3."
+        );
+        assert_eq!(body, "Here's where the body starts.");
+    }
+
+    #[test]
+    fn test_split_title_body_uses_first_line_as_title_for_multiline_input() {
+        let (title, body) = split_title_body(
+            "Here's another test - 1.2 plus 2.3 mi. equals 5.1.1 time 3.\nHere's where the body starts.",
+        );
+        assert_eq!(
+            title,
+            "Here's another test - 1.2 plus 2.3 mi. equals 5.1.1 time 3."
+        );
+        assert_eq!(body, "Here's where the body starts.");
+    }
+
+    #[test]
+    fn test_split_title_body_ignores_decimal_points() {
+        let (title, body) = split_title_body("Run Walk with the Boys - 1.07 mi. / 00:20:18 18:58 pace.");
+        assert_eq!(title, "Run Walk with the Boys - 1.07 mi. / 00:20:18 18:58 pace.");
+        assert_eq!(body, "");
     }
 }
