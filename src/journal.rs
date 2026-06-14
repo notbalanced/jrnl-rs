@@ -3,12 +3,15 @@ use crate::entry::Entry;
 use crate::storage::folder::FolderStore;
 use crate::storage::single_file::SingleFileStore;
 use crate::storage::JournalStore;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDateTime;
+use std::fs;
+use std::path::PathBuf;
 
 /// Wraps the appropriate storage backend for a journal config.
 pub struct Journal {
     store: Box<dyn JournalStore>,
+    cookie_path: PathBuf,
 }
 
 impl Journal {
@@ -17,15 +20,30 @@ impl Journal {
             StorageMode::File => Box::new(SingleFileStore::new(cfg.path.clone())),
             StorageMode::Folder => Box::new(FolderStore::new(cfg.path.clone())),
         };
-        Journal { store }
+        let cookie_path = cookie_path_for(cfg);
+        Journal { store, cookie_path }
     }
 
     pub fn load_entries(&self) -> Result<Vec<Entry>> {
         self.store.load_entries()
     }
 
+    pub fn last_entry(&self) -> Result<Option<Entry>> {
+        if self.cookie_path.exists() {
+            let content = fs::read_to_string(&self.cookie_path)
+                .with_context(|| format!("Failed to read last-entry cookie {}", self.cookie_path.display()))?;
+            if let Some(entry) = crate::entry::parse_entries(&content).into_iter().last() {
+                return Ok(Some(entry));
+            }
+        }
+
+        self.store.last_entry()
+    }
+
     pub fn add_entry(&self, entry: &Entry) -> Result<()> {
-        self.store.append_entry(entry)
+        self.store.append_entry(entry)?;
+        write_cookie_file(&self.cookie_path, entry)?;
+        Ok(())
     }
 
     /// Reconcile a user-edited subset of entries against the full journal.
@@ -71,14 +89,50 @@ impl Journal {
     }
 
     pub fn save_all(&self, entries: &[Entry]) -> Result<()> {
-        self.store.save_all(entries)
+        self.store.save_all(entries)?;
+
+        if let Some(entry) = entries.last().cloned() {
+            write_cookie_file(&self.cookie_path, &entry)?;
+        }
+
+        Ok(())
     }
+}
+
+fn cookie_path_for(cfg: &JournalConfig) -> PathBuf {
+    match cfg.storage {
+        StorageMode::File => {
+            let mut path = cfg.path.clone();
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("journal.txt");
+            path.set_file_name(format!("{}.last", file_name));
+            path
+        }
+        StorageMode::Folder => cfg.path.join(".jrnl-last"),
+    }
+}
+
+fn write_cookie_file(path: &PathBuf, entry: &Entry) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create cookie directory {}", parent.display()))?;
+        }
+    }
+
+    let content = format!("{}\n", entry.to_text());
+    fs::write(path, content)
+        .with_context(|| format!("Failed to write last-entry cookie {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::NaiveDateTime;
+    use tempfile::tempdir;
 
     fn entry(date: &str, title: &str, body: &str) -> Entry {
         Entry::new(
@@ -126,6 +180,35 @@ mod tests {
         let result = j.reconcile(&all, &original, &edited);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "B.");
+    }
+
+    #[test]
+    fn test_last_entry_prefers_newest_modified_day_file() {
+        let dir = tempdir().unwrap();
+        let journal = Journal::from_config(&JournalConfig {
+            path: dir.path().to_path_buf(),
+            storage: StorageMode::Folder,
+        });
+
+        let older = Entry::new(
+            NaiveDateTime::parse_from_str("2026-06-10 09:00", "%Y-%m-%d %H:%M").unwrap(),
+            false,
+            "Test1.".to_string(),
+            "body".to_string(),
+        );
+        let newer = Entry::new(
+            NaiveDateTime::parse_from_str("2026-06-09 09:00", "%Y-%m-%d %H:%M").unwrap(),
+            false,
+            "This is Test 4.".to_string(),
+            "body".to_string(),
+        );
+
+        journal.add_entry(&older).unwrap();
+        journal.add_entry(&newer).unwrap();
+
+        let last = journal.last_entry().unwrap().unwrap();
+        assert_eq!(last.title, "This is Test 4.");
+        assert_eq!(last.date, newer.date);
     }
 
     #[test]

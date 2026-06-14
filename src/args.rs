@@ -33,6 +33,7 @@ const BOOL_FLAGS: &[&str] = &[
     "--edit",
     "--delete",
     "--tags",
+    "--last",
     "--short",
     "--help",
     "--version",

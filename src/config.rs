@@ -31,7 +31,8 @@ pub struct Config {
     /// strftime-style format used when rendering entry timestamps.
     #[serde(default = "default_timeformat")]
     pub timeformat: String,
-    /// Value for linewrap option (0 = no wrap, > 0 = wrap at column N).
+    /// Maximum line width (in characters) for displayed entries, wrapping
+    /// at word boundaries. 0 disables wrapping.
     #[serde(default = "default_linewrap")]
     pub linewrap: usize,
 }
@@ -108,7 +109,11 @@ impl Config {
         match key {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
-            "linewrap" => self.linewrap = value.parse().unwrap_or_else(|_| default_linewrap()),
+            "linewrap" => {
+                self.linewrap = value
+                    .parse::<usize>()
+                    .map_err(|_| anyhow!("Invalid linewrap value '{}' (expected a non-negative integer)", value))?;
+            }
             other => {
                 if let Some(rest) = other.strip_prefix("journals.") {
                     let mut parts = rest.splitn(2, '.');

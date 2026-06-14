@@ -15,6 +15,16 @@ impl SingleFileStore {
 }
 
 impl JournalStore for SingleFileStore {
+    fn last_entry(&self) -> Result<Option<Entry>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&self.path)
+            .with_context(|| format!("Failed to read journal file {}", self.path.display()))?;
+        Ok(parse_entries(&content).into_iter().last())
+    }
+
     fn load_entries(&self) -> Result<Vec<Entry>> {
         if !self.path.exists() {
             return Ok(Vec::new());

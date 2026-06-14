@@ -56,6 +56,27 @@ impl FolderStore {
 }
 
 impl JournalStore for FolderStore {
+    fn last_entry(&self) -> Result<Option<Entry>> {
+        let mut latest: Option<(std::fs::Metadata, PathBuf)> = None;
+
+        for file in self.day_files()? {
+            let metadata = fs::metadata(&file)
+                .with_context(|| format!("Failed to stat journal file {}", file.display()))?;
+            match &latest {
+                Some((current, _)) if metadata.modified()? <= current.modified()? => {}
+                _ => latest = Some((metadata, file)),
+            }
+        }
+
+        let Some((_, path)) = latest else {
+            return Ok(None);
+        };
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read journal file {}", path.display()))?;
+        Ok(parse_entries(&content).into_iter().last())
+    }
+
     fn load_entries(&self) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         for file in self.day_files()? {

@@ -82,6 +82,10 @@ pub struct Cli {
     #[arg(long = "tags")]
     pub tags: bool,
 
+    /// Show the entry that was most recently added to the journal
+    #[arg(long = "last")]
+    pub last: bool,
+
     /// Show only titles or line containing the search tags
     #[arg(long = "short")]
     pub short: bool,
@@ -125,6 +129,7 @@ impl Cli {
             || self.delete
             || self.format.is_some()
             || self.tags
+            || self.last
             || self.short
     }
 }

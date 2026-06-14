@@ -9,6 +9,9 @@ pub trait JournalStore {
     /// Load all entries from storage, sorted by date ascending.
     fn load_entries(&self) -> Result<Vec<Entry>>;
 
+    /// Return the most recently added entry as stored on disk.
+    fn last_entry(&self) -> Result<Option<Entry>>;
+
     /// Append a single new entry to storage.
     fn append_entry(&self, entry: &Entry) -> Result<()>;
 

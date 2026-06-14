@@ -272,6 +272,15 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
         return cmd_edit(config, journal, &entries, &matched);
     }
 
+    if cli.last {
+        if let Some(entry) = journal.last_entry()? {
+            println!("{}", entry.to_text());
+        } else {
+            println!("No entries found.");
+        }
+        return Ok(());
+    }
+
     if cli.tags {
         let refs: Vec<&Entry> = matched.iter().collect();
         let out = formatter::format_entries(&refs, Some(FormatType::Tags), false, config.linewrap);
