@@ -31,10 +31,17 @@ pub struct Config {
     /// strftime-style format used when rendering entry timestamps.
     #[serde(default = "default_timeformat")]
     pub timeformat: String,
+    /// Value for linewrap option (0 = no wrap, > 0 = wrap at column N).
+    #[serde(default = "default_linewrap")]
+    pub linewrap: usize,
 }
 
 fn default_timeformat() -> String {
     "%Y-%m-%d %H:%M".to_string()
+}
+
+fn default_linewrap() -> usize {
+    79
 }
 
 impl Default for Config {
@@ -52,6 +59,7 @@ impl Default for Config {
             journals,
             editor: None,
             timeformat: default_timeformat(),
+            linewrap: default_linewrap(),
         }
     }
 }
@@ -100,6 +108,7 @@ impl Config {
         match key {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
+            "linewrap" => self.linewrap = value.parse().unwrap_or_else(|_| default_linewrap()),
             other => {
                 if let Some(rest) = other.strip_prefix("journals.") {
                     let mut parts = rest.splitn(2, '.');

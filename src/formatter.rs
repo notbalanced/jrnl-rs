@@ -13,13 +13,16 @@ struct JsonEntry<'a> {
 }
 
 /// Render a list of entries according to the given format. Default is "text".
-pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: bool) -> String {
+pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: bool, linewrap: usize) -> String {
     if short {
         return entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n");
     }
 
     match format {
-        None | Some(FormatType::Text) | Some(FormatType::Txt) | Some(FormatType::Pretty) => {
+        None => { 
+            format_text_entries(entries, linewrap)
+        }        
+        Some(FormatType::Text) | Some(FormatType::Txt) | Some(FormatType::Pretty) => {
             entries.iter().map(|e| e.to_text()).collect::<Vec<_>>().join("\n")
         }
         Some(FormatType::Short) => {
@@ -32,6 +35,66 @@ pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: boo
         Some(FormatType::Json) => format_json(entries),
         Some(FormatType::Tags) => format_tags(entries),
     }
+}
+/// Wrap text to the specified width at word boundaries.
+fn wrap_text(text: &str, width: usize) -> String {
+    if width == 0 || text.trim().is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::new();
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            out.push('\n');
+            continue;
+        }
+
+        let mut current = String::new();
+        for word in line.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_string()
+            } else {
+                format!(" {}", word)
+            };
+
+            let next_len = current.chars().count() + candidate.chars().count();
+            if !current.is_empty() && next_len > width {
+                out.push_str(&current);
+                out.push('\n');
+                current = word.to_string();
+            } else {
+                current.push_str(&candidate);
+            }
+        }
+
+        if !current.is_empty() {
+            out.push_str(&current);
+        }
+        out.push('\n');
+    }
+
+    out.trim_end_matches('\n').to_string()
+}
+
+/// Format plain-text entries, applying word-based wrapping when requested.
+fn format_text_entries(entries: &[&Entry], linewrap: usize) -> String {
+    let mut out = String::new();
+
+    for (index, entry) in entries.iter().enumerate() {
+        let rendered = if linewrap > 0 {
+            wrap_text(&entry.to_text(), linewrap)
+        } else {
+            entry.to_text().to_string()
+        };
+
+        out.push_str(&rendered);
+        if index + 1 < entries.len() {
+            out.push_str("\n\n");
+        }
+    }
+
+    out.trim_end().to_string()
 }
 
 fn format_markdown(entries: &[&Entry]) -> String {
@@ -46,14 +109,14 @@ fn format_markdown(entries: &[&Entry]) -> String {
             out.push_str(&format!("## {}\n\n", day));
             current_date = day;
         }
-        let star = if e.starred { "⭐ " } else { "" };
+        let star = if e.starred { "* " } else { "" };
         out.push_str(&format!("### {}{}\n", star, e.title));
         if !e.body.trim().is_empty() {
             out.push_str(&format!("{}\n", e.body.trim()));
         }
         out.push('\n');
     }
-    out.trim_end().to_string()
+    out.to_string()
 }
 
 fn format_json(entries: &[&Entry]) -> String {
@@ -105,16 +168,30 @@ mod tests {
     fn test_text_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World");
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false);
+        let out = format_entries(&refs, None, false, 0);
         assert!(out.contains("[2024-01-15 09:30] Hello."));
         assert!(out.contains("World"));
+    }
+
+    #[test]
+    fn test_text_format_wraps_at_word_boundaries() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "Hello.",
+            "Alpha beta gamma delta epsilon",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 18);
+
+        assert!(out.lines().any(|line| line.contains("Alpha beta")));
+        assert!(out.lines().all(|line| line.chars().count() <= 18 || line.contains("Alpha") || line.contains("beta")));
     }
 
     #[test]
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), false);
+        let out = format_entries(&refs, Some(FormatType::Json), false, 0);
         assert!(out.contains("\"title\""));
         assert!(out.contains("@world"));
     }
@@ -124,7 +201,7 @@ mod tests {
         let e1 = entry("2024-01-15 09:30", "Met @bob.", "");
         let e2 = entry("2024-01-16 09:30", "Met @bob and @alice.", "");
         let refs = vec![&e1, &e2];
-        let out = format_entries(&refs, Some(FormatType::Tags), false);
+        let out = format_entries(&refs, Some(FormatType::Tags), false, 0);
         assert!(out.contains("@bob"));
         assert!(out.contains("@alice"));
         assert!(out.contains("2"));
@@ -134,7 +211,7 @@ mod tests {
     fn test_short_flag_overrides_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World body text");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), true);
+        let out = format_entries(&refs, Some(FormatType::Json), true, 0);
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
     }

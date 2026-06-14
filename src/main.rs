@@ -274,13 +274,13 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 
     if cli.tags {
         let refs: Vec<&Entry> = matched.iter().collect();
-        let out = formatter::format_entries(&refs, Some(FormatType::Tags), false);
+        let out = formatter::format_entries(&refs, Some(FormatType::Tags), false, config.linewrap);
         println!("{}", out);
         return Ok(());
     }
 
     let refs: Vec<&Entry> = matched.iter().collect();
-    let out = formatter::format_entries(&refs, cli.format, cli.short);
+    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap);
 
     if let Some(file_path) = &cli.file {
         std::fs::write(file_path, &out)
