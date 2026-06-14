@@ -15,12 +15,12 @@ pub struct Journal {
 }
 
 impl Journal {
-    pub fn from_config(cfg: &JournalConfig) -> Self {
+    pub fn from_config(name: &str, cfg: &JournalConfig, cookie_dir: &PathBuf) -> Self {
         let store: Box<dyn JournalStore> = match cfg.storage {
             StorageMode::File => Box::new(SingleFileStore::new(cfg.path.clone())),
             StorageMode::Folder => Box::new(FolderStore::new(cfg.path.clone())),
         };
-        let cookie_path = cookie_path_for(cfg);
+        let cookie_path = cookie_path_for(name, cfg, cookie_dir);
         Journal { store, cookie_path }
     }
 
@@ -99,19 +99,8 @@ impl Journal {
     }
 }
 
-fn cookie_path_for(cfg: &JournalConfig) -> PathBuf {
-    match cfg.storage {
-        StorageMode::File => {
-            let mut path = cfg.path.clone();
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("journal.txt");
-            path.set_file_name(format!("{}.last", file_name));
-            path
-        }
-        StorageMode::Folder => cfg.path.join(".jrnl-last"),
-    }
+fn cookie_path_for(name: &str, _cfg: &JournalConfig, cookie_dir: &PathBuf) -> PathBuf {
+    cookie_dir.join(format!("{}.last", name))
 }
 
 fn write_cookie_file(path: &PathBuf, entry: &Entry) -> Result<()> {
@@ -148,7 +137,20 @@ mod tests {
             path: std::path::PathBuf::from("/tmp/unused.txt"),
             storage: StorageMode::File,
         };
-        Journal::from_config(&cfg)
+        Journal::from_config("default", &cfg, &std::path::PathBuf::from("/tmp/cookies"))
+    }
+
+    #[test]
+    fn test_cookie_path_uses_configured_cookie_dir() {
+        let dir = tempdir().unwrap();
+        let cookie_dir = dir.path().join("cookies");
+
+        let journal = Journal::from_config("work", &JournalConfig {
+            path: dir.path().join("journal.txt"),
+            storage: StorageMode::File,
+        }, &cookie_dir);
+
+        assert_eq!(journal.cookie_path, cookie_dir.join("work.last"));
     }
 
     #[test]
@@ -185,10 +187,11 @@ mod tests {
     #[test]
     fn test_last_entry_prefers_newest_modified_day_file() {
         let dir = tempdir().unwrap();
-        let journal = Journal::from_config(&JournalConfig {
+        let cookie_dir = dir.path().join("cookies");
+        let journal = Journal::from_config("default", &JournalConfig {
             path: dir.path().to_path_buf(),
             storage: StorageMode::Folder,
-        });
+        }, &cookie_dir);
 
         let older = Entry::new(
             NaiveDateTime::parse_from_str("2026-06-10 09:00", "%Y-%m-%d %H:%M").unwrap(),

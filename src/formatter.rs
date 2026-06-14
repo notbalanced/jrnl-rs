@@ -13,15 +13,21 @@ struct JsonEntry<'a> {
 }
 
 /// Render a list of entries according to the given format. Default is "text".
+/// `linewrap` is the maximum line width in characters, applied only when no
+/// `--format` is given and `short` is false (i.e. the default display mode);
+/// wrapping breaks only at word boundaries. Explicit `--format text/txt/pretty`
+/// and `--short` are always shown unwrapped.
 pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: bool, linewrap: usize) -> String {
     if short {
         return entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n");
     }
 
     match format {
-        None => { 
-            format_text_entries(entries, linewrap)
-        }        
+        None => entries
+            .iter()
+            .map(|e| wrap_text(e.to_text().trim_end(), linewrap))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         Some(FormatType::Text) | Some(FormatType::Txt) | Some(FormatType::Pretty) => {
             entries.iter().map(|e| e.to_text()).collect::<Vec<_>>().join("\n")
         }
@@ -36,65 +42,43 @@ pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: boo
         Some(FormatType::Tags) => format_tags(entries),
     }
 }
-/// Wrap text to the specified width at word boundaries.
-fn wrap_text(text: &str, width: usize) -> String {
-    if width == 0 || text.trim().is_empty() {
+
+/// Wrap `text` so that no line exceeds `width` characters, breaking only at
+/// word boundaries (spaces). Existing line breaks are preserved -- each line
+/// is wrapped independently, so blank lines (paragraph breaks) stay intact.
+/// A single word longer than `width` is left intact rather than being split
+/// mid-word. `width == 0` disables wrapping entirely.
+pub fn wrap_text(text: &str, width: usize) -> String {
+    if width == 0 {
         return text.to_string();
     }
-
-    let mut out = String::new();
-
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        let mut current = String::new();
-        for word in line.split_whitespace() {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!(" {}", word)
-            };
-
-            let next_len = current.chars().count() + candidate.chars().count();
-            if !current.is_empty() && next_len > width {
-                out.push_str(&current);
-                out.push('\n');
-                current = word.to_string();
-            } else {
-                current.push_str(&candidate);
-            }
-        }
-
-        if !current.is_empty() {
-            out.push_str(&current);
-        }
-        out.push('\n');
-    }
-
-    out.trim_end_matches('\n').to_string()
+    text.lines().map(|line| wrap_line(line, width)).collect::<Vec<_>>().join("\n")
 }
 
-/// Format plain-text entries, applying word-based wrapping when requested.
-fn format_text_entries(entries: &[&Entry], linewrap: usize) -> String {
-    let mut out = String::new();
-
-    for (index, entry) in entries.iter().enumerate() {
-        let rendered = if linewrap > 0 {
-            wrap_text(&entry.to_text(), linewrap)
-        } else {
-            entry.to_text().to_string()
-        };
-
-        out.push_str(&rendered);
-        if index + 1 < entries.len() {
-            out.push_str("\n\n");
-        }
+fn wrap_line(line: &str, width: usize) -> String {
+    if line.chars().count() <= width {
+        return line.to_string();
     }
 
-    out.trim_end().to_string()
+    let mut out = String::new();
+    let mut current_width = 0;
+
+    for word in line.split(' ') {
+        let word_width = word.chars().count();
+        if current_width == 0 {
+            out.push_str(word);
+            current_width = word_width;
+        } else if current_width + 1 + word_width <= width {
+            out.push(' ');
+            out.push_str(word);
+            current_width += 1 + word_width;
+        } else {
+            out.push('\n');
+            out.push_str(word);
+            current_width = word_width;
+        }
+    }
+    out
 }
 
 fn format_markdown(entries: &[&Entry]) -> String {
@@ -109,14 +93,14 @@ fn format_markdown(entries: &[&Entry]) -> String {
             out.push_str(&format!("## {}\n\n", day));
             current_date = day;
         }
-        let star = if e.starred { "* " } else { "" };
+        let star = if e.starred { "⭐ " } else { "" };
         out.push_str(&format!("### {}{}\n", star, e.title));
         if !e.body.trim().is_empty() {
             out.push_str(&format!("{}\n", e.body.trim()));
         }
         out.push('\n');
     }
-    out.to_string()
+    out.trim_end().to_string()
 }
 
 fn format_json(entries: &[&Entry]) -> String {
@@ -174,20 +158,6 @@ mod tests {
     }
 
     #[test]
-    fn test_text_format_wraps_at_word_boundaries() {
-        let e = entry(
-            "2024-01-15 09:30",
-            "Hello.",
-            "Alpha beta gamma delta epsilon",
-        );
-        let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 18);
-
-        assert!(out.lines().any(|line| line.contains("Alpha beta")));
-        assert!(out.lines().all(|line| line.chars().count() <= 18 || line.contains("Alpha") || line.contains("beta")));
-    }
-
-    #[test]
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
@@ -214,5 +184,117 @@ mod tests {
         let out = format_entries(&refs, Some(FormatType::Json), true, 0);
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
+    }
+
+    #[test]
+    fn test_wrap_text_disabled_when_zero() {
+        let text = "This is a fairly long line of text that would normally wrap.";
+        assert_eq!(wrap_text(text, 0), text);
+    }
+
+    #[test]
+    fn test_wrap_text_breaks_at_word_boundary() {
+        let text = "The quick brown fox jumps over the lazy dog";
+        let wrapped = wrap_text(text, 10);
+        for line in wrapped.lines() {
+            assert!(line.chars().count() <= 10, "line too long: {:?}", line);
+        }
+        // Should not have split any word.
+        let rejoined: String = wrapped.split('\n').collect::<Vec<_>>().join(" ");
+        assert_eq!(rejoined, text);
+    }
+
+    #[test]
+    fn test_wrap_text_preserves_blank_lines_between_paragraphs() {
+        let text = "Short line.\n\nAnother short line.";
+        let wrapped = wrap_text(text, 40);
+        assert_eq!(wrapped, text);
+    }
+
+    #[test]
+    fn test_wrap_text_does_not_split_long_word() {
+        let text = "supercalifragilisticexpialidocious is long";
+        let wrapped = wrap_text(text, 10);
+        assert!(wrapped.lines().next().unwrap().chars().count() > 10);
+    }
+
+    #[test]
+    fn test_format_entries_applies_linewrap_to_text() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A reasonably long title that should wrap.",
+            "And a body with several words that also needs wrapping.",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 20);
+        for line in out.lines() {
+            assert!(line.chars().count() <= 20, "line too long: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn test_format_entries_no_wrap_by_default_param() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A reasonably long title that would wrap if linewrap were set.",
+            "",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 0);
+        // With linewrap=0, the whole header line stays on one line.
+        assert_eq!(out.lines().next().unwrap(), "[2024-01-15 09:30] A reasonably long title that would wrap if linewrap were set.");
+    }
+
+    #[test]
+    fn test_format_entries_applies_linewrap_to_short() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A reasonably long title that should wrap when short.",
+            "Body is ignored in short format.",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, true, 20);
+        // --short is never wrapped, regardless of linewrap.
+        assert_eq!(out, e.to_short());
+    }
+
+    #[test]
+    fn test_explicit_text_format_not_wrapped() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A reasonably long title that should not wrap when --format text is given.",
+            "Nor should this body wrap.",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Text), false, 20);
+        assert_eq!(out, e.to_text());
+    }
+
+    #[test]
+    fn test_explicit_short_format_not_wrapped() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A reasonably long title that should not wrap with --format short.",
+            "",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Short), false, 20);
+        assert_eq!(out, e.to_short());
+    }
+
+    #[test]
+    fn test_default_format_has_blank_line_between_entries() {
+        let e1 = entry("2024-01-15 09:30", "First entry.", "");
+        let e2 = entry("2024-01-16 09:30", "Second entry.", "");
+        let refs = vec![&e1, &e2];
+
+        // With wrapping enabled (the bug: wrap_text strips trailing
+        // newlines via .lines(), which collapsed the blank line).
+        let out = format_entries(&refs, None, false, 40);
+        assert!(out.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out);
+
+        // And with wrapping disabled.
+        let out_nowrap = format_entries(&refs, None, false, 0);
+        assert!(out_nowrap.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
     }
 }

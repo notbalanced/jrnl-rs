@@ -73,7 +73,7 @@ fn run() -> Result<()> {
     };
 
     let journal_cfg = config.get_journal(&journal_name)?;
-    let journal = Journal::from_config(journal_cfg);
+    let journal = Journal::from_config(&journal_name, journal_cfg, &config.cookie_dir);
 
     if cli.is_search_mode() {
         cmd_search(&cli, &config, &journal)
@@ -274,7 +274,11 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 
     if cli.last {
         if let Some(entry) = journal.last_entry()? {
-            println!("{}", entry.to_text());
+            if cli.short {
+                println!("{}", entry.to_short());
+            } else {
+                println!("{}", entry.to_text());
+            }
         } else {
             println!("No entries found.");
         }

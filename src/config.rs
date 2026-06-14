@@ -25,6 +25,9 @@ pub struct Config {
     /// Map of journal name -> journal config. "default" is used when no
     /// journal name is specified on the command line.
     pub journals: HashMap<String, JournalConfig>,
+    /// Directory used for last-entry cookie files.
+    #[serde(default = "default_cookie_dir")]
+    pub cookie_dir: PathBuf,
     /// Default editor command (falls back to $EDITOR / $VISUAL if empty).
     #[serde(default)]
     pub editor: Option<String>,
@@ -45,6 +48,12 @@ fn default_linewrap() -> usize {
     79
 }
 
+fn default_cookie_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("jrnl-rs")
+}
+
 impl Default for Config {
     fn default() -> Self {
         let mut journals = HashMap::new();
@@ -58,6 +67,7 @@ impl Default for Config {
         );
         Config {
             journals,
+            cookie_dir: default_cookie_dir(),
             editor: None,
             timeformat: default_timeformat(),
             linewrap: default_linewrap(),
@@ -103,12 +113,13 @@ impl Config {
     }
 
     /// Apply --config-override KEY VALUE to this config (in-memory only).
-    /// Supported keys: "editor", "timeformat", "journals.<name>.path",
-    /// "journals.<name>.storage".
+    /// Supported keys: "editor", "timeformat", "cookie_dir",
+    /// "journals.<name>.path", "journals.<name>.storage".
     pub fn apply_override(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
+            "cookie_dir" => self.cookie_dir = PathBuf::from(value),
             "linewrap" => {
                 self.linewrap = value
                     .parse::<usize>()
@@ -220,6 +231,12 @@ mod tests {
     fn test_default_config_has_default_journal() {
         let config = Config::default();
         assert!(config.journals.contains_key("default"));
+    }
+
+    #[test]
+    fn test_default_cookie_dir_uses_config_directory() {
+        let config = Config::default();
+        assert_eq!(config.cookie_dir, default_cookie_dir());
     }
 
     #[test]
