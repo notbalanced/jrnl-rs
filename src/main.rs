@@ -56,7 +56,7 @@ fn run() -> Result<()> {
         cmd_add(&cli, &journal, &cli.text.join(" "))
     } else {
         // No text and no search flags: prompt for input on stdin.
-        cmd_compose(&journal)
+        cmd_compose(&config, &journal)
     }
 }
 
@@ -143,8 +143,48 @@ fn apply_template(
     Ok(Entry::new(date, starred, final_title, final_body))
 }
 
-/// No text and no search flags: read a free-form entry from stdin until EOF.
-fn cmd_compose(journal: &Journal) -> Result<()> {
+/// No text and no search flags: jrnl's "composing mode".
+/// If an editor is configured (via config, $VISUAL, or $EDITOR), open it
+/// with a blank temp file and use whatever the user writes as the new
+/// entry. Otherwise, fall back to reading free-form text from stdin.
+fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
+    if config.has_editor_configured() {
+        let editor_cmd = config.resolve_editor();
+        let (raw, written) = editor::edit_entries(&editor_cmd, &[])?;
+
+        if !written.is_empty() {
+            // User wrote one or more properly-headered "[date] title" entries.
+            for e in &written {
+                journal.add_entry(e)?;
+            }
+            println!(
+                "{} entr{} added.",
+                written.len(),
+                if written.len() == 1 { "y" } else { "ies" }
+            );
+            return Ok(());
+        }
+
+        // No recognizable "[date] ..." header -- treat the whole file as a
+        // single free-form entry, dated now.
+        if raw.trim().is_empty() {
+            println!("No input given, nothing saved.");
+            return Ok(());
+        }
+
+        let date = Local::now().naive_local();
+        let (starred, rest) = match raw.trim_start().strip_prefix('*') {
+            Some(r) => (true, r),
+            None => (false, raw.trim_start()),
+        };
+        let (title, body) = split_title_body(rest);
+        let entry = Entry::new(date, starred, title, body);
+        journal.add_entry(&entry)?;
+        println!("Entry added to journal.");
+        return Ok(());
+    }
+
+    // No editor configured: prompt for input on stdin (jrnl's other fallback).
     use std::io::Read;
     println!("Composing new entry. Press Ctrl-D (Linux/Mac) or Ctrl-Z then Enter (Windows) to finish.");
     let mut buf = String::new();
@@ -294,7 +334,7 @@ fn cmd_edit(config: &Config, journal: &Journal, all_entries: &[Entry], matched: 
     }
 
     let editor_cmd = config.resolve_editor();
-    let edited = editor::edit_entries(&editor_cmd, matched)?;
+    let (_, edited) = editor::edit_entries(&editor_cmd, matched)?;
 
     let updated_all = journal.reconcile(all_entries, matched, &edited);
     journal.save_all(&updated_all)?;

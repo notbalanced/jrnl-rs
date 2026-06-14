@@ -4,14 +4,14 @@ use std::fs;
 use std::process::Command;
 
 /// Open the given entries in the user's editor as plain text, then re-parse
-/// the result. Returns the new list of entries as edited by the user.
+/// the result. Returns (raw_text, parsed_entries).
 ///
 /// Entries are written in jrnl's standard `[date] title\nbody` format,
 /// separated by blank lines, so the user can freely edit, delete, or add
-/// entries (new entries without a recognizable `[date] ...` header are
-/// dropped, as jrnl has no "current time" context for them here -- the
-/// caller may want to warn about this).
-pub fn edit_entries(editor_cmd: &str, entries: &[Entry]) -> Result<Vec<Entry>> {
+/// entries. The raw text is also returned so callers can fall back to
+/// treating it as a single free-form entry if no `[date] ...` headers
+/// were recognized (e.g. composing mode with a blank starting file).
+pub fn edit_entries(editor_cmd: &str, entries: &[Entry]) -> Result<(String, Vec<Entry>)> {
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!("jrnl-edit-{}.txt", std::process::id()));
 
@@ -29,7 +29,8 @@ pub fn edit_entries(editor_cmd: &str, entries: &[Entry]) -> Result<Vec<Entry>> {
         .with_context(|| format!("Failed to read temp file {}", tmp_path.display()))?;
     let _ = fs::remove_file(&tmp_path);
 
-    Ok(parse_entries(&edited))
+    let parsed = parse_entries(&edited);
+    Ok((edited, parsed))
 }
 
 /// Spawn the configured editor on the given file and wait for it to exit.

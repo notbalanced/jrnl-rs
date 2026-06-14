@@ -134,6 +134,27 @@ impl Config {
             .ok_or_else(|| anyhow!("No journal named '{}' configured", name))
     }
 
+    /// Whether an editor is configured via the config file, $VISUAL, or $EDITOR.
+    /// Used to decide composing-mode behavior: launch editor vs. prompt on stdin.
+    pub fn has_editor_configured(&self) -> bool {
+        if let Some(e) = &self.editor {
+            if !e.trim().is_empty() {
+                return true;
+            }
+        }
+        if let Ok(e) = std::env::var("VISUAL") {
+            if !e.trim().is_empty() {
+                return true;
+            }
+        }
+        if let Ok(e) = std::env::var("EDITOR") {
+            if !e.trim().is_empty() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Resolve the editor command: explicit config, then $VISUAL, then $EDITOR,
     /// then a platform default.
     pub fn resolve_editor(&self) -> String {
