@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+
+# Cargo lock file
+# - For binaries (which this is, via [[bin]]), it's generally recommended
+#   to commit Cargo.lock for reproducible builds. If you'd rather not
+#   (e.g. you want consumers to always get latest compatible deps),
+#   uncomment the line below.
+# Cargo.lock
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Environment files (if you ever add one for local config/secrets)
+.env
+
