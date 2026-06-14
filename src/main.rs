@@ -44,20 +44,37 @@ fn run() -> Result<()> {
         return cmd_list_journals(&config, cli.format);
     }
 
-    // For now, operate on the "default" journal. (Named journals could be
-    // added by checking if the first word of `text` matches a configured
-    // journal name.)
-    let journal_cfg = config.get_journal("default")?;
+    // If the first word of the entry text matches a configured journal name
+    // (e.g. `jrnl work ...`), use that journal and strip the name from the
+    // text. Otherwise fall back to "default".
+    let (journal_name, text_args) = resolve_journal_name(&config, cli.text.clone());
+
+    let journal_cfg = config.get_journal(&journal_name)?;
     let journal = Journal::from_config(journal_cfg);
 
     if cli.is_search_mode() {
         cmd_search(&cli, &config, &journal)
-    } else if !cli.text.is_empty() {
-        cmd_add(&cli, &journal, &cli.text.join(" "))
+    } else if !text_args.is_empty() {
+        cmd_add(&cli, &journal, &text_args.join(" "))
     } else {
         // No text and no search flags: prompt for input on stdin.
         cmd_compose(&config, &journal)
     }
+}
+
+/// If the first element of `text` matches a configured journal name
+/// (e.g. `jrnl work ...`), return that journal's name and the remaining
+/// text with the name stripped. Otherwise return "default" and the
+/// text unchanged.
+fn resolve_journal_name(config: &Config, mut text: Vec<String>) -> (String, Vec<String>) {
+    if let Some(first) = text.first() {
+        if config.journals.contains_key(first) {
+            let name = first.clone();
+            text.remove(0);
+            return (name, text);
+        }
+    }
+    ("default".to_string(), text)
 }
 
 /// --list: print configured journal names and their paths.
@@ -354,6 +371,60 @@ fn cmd_edit(config: &Config, journal: &Journal, all_entries: &[Entry], matched: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config_with_work_journal() -> Config {
+        let mut config = Config::default();
+        config.journals.insert(
+            "work".to_string(),
+            config::JournalConfig {
+                path: std::path::PathBuf::from("/tmp/work.txt"),
+                storage: config::StorageMode::File,
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn test_resolve_journal_name_named_journal() {
+        let config = test_config_with_work_journal();
+        let (name, rest) = resolve_journal_name(&config, vec!["work".to_string(), "Note.".to_string()]);
+        assert_eq!(name, "work");
+        assert_eq!(rest, vec!["Note.".to_string()]);
+    }
+
+    #[test]
+    fn test_resolve_journal_name_default_when_no_match() {
+        let config = test_config_with_work_journal();
+        let (name, rest) = resolve_journal_name(&config, vec!["Just".to_string(), "a".to_string(), "note.".to_string()]);
+        assert_eq!(name, "default");
+        assert_eq!(rest, vec!["Just".to_string(), "a".to_string(), "note.".to_string()]);
+    }
+
+    #[test]
+    fn test_resolve_journal_name_bare_journal_name_for_compose() {
+        let config = test_config_with_work_journal();
+        let (name, rest) = resolve_journal_name(&config, vec!["work".to_string()]);
+        assert_eq!(name, "work");
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_journal_name_empty_text() {
+        let config = test_config_with_work_journal();
+        let (name, rest) = resolve_journal_name(&config, vec![]);
+        assert_eq!(name, "default");
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_journal_name_date_prefix_not_mistaken_for_journal() {
+        let config = test_config_with_work_journal();
+        // "yesterday:" is one token (no space before the colon), shouldn't
+        // match any journal name.
+        let (name, rest) = resolve_journal_name(&config, vec!["yesterday:".to_string(), "Did stuff.".to_string()]);
+        assert_eq!(name, "default");
+        assert_eq!(rest, vec!["yesterday:".to_string(), "Did stuff.".to_string()]);
+    }
 
     #[test]
     fn test_parse_free_text_entry_with_us_date_and_am_pm() {
