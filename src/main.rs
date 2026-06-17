@@ -285,7 +285,7 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
 fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     let entries = journal.load_entries()?;
 
-    let filter = build_filter(cli)?;
+    let filter = build_filter(cli, config)?;
     let matched_refs = filter.apply(&entries);
     let matched: Vec<Entry> = matched_refs.iter().map(|e| (*e).clone()).collect();
 
@@ -320,13 +320,19 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 
     if cli.tags {
         let refs: Vec<&Entry> = matched.iter().collect();
-        let out = formatter::format_entries(&refs, Some(FormatType::Tags), false, config.linewrap);
+        let out = formatter::format_entries(
+            &refs,
+            Some(FormatType::Tags),
+            false,
+            config.linewrap,
+            &config.tagsymbols,
+        );
         println!("{}", out);
         return Ok(());
     }
 
     let refs: Vec<&Entry> = matched.iter().collect();
-    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap);
+    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap, &config.tagsymbols);
 
     if let Some(file_path) = &cli.file {
         std::fs::write(file_path, &out)
@@ -339,7 +345,7 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     Ok(())
 }
 
-fn build_filter(cli: &Cli) -> Result<Filter> {
+fn build_filter(cli: &Cli, config: &Config) -> Result<Filter> {
     let mut filter = Filter {
         and: cli.and,
         starred: cli.starred,
@@ -347,6 +353,7 @@ fn build_filter(cli: &Cli) -> Result<Filter> {
         contains: cli.contains.clone(),
         not: cli.not.clone(),
         limit: cli.n,
+        tag_symbols: config.tagsymbols.clone(),
         ..Default::default()
     };
 

@@ -2,6 +2,8 @@ use chrono::{NaiveDateTime, NaiveDate};
 use std::collections::HashSet;
 use std::fmt;
 
+pub const DEFAULT_TAG_SYMBOLS: &str = "#@";
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub date: NaiveDateTime,
@@ -15,14 +17,16 @@ impl Entry {
         Entry { date, starred, title, body }
     }
 
-    /// Extract tags (words starting with @) from title + body.
-    pub fn tags(&self) -> HashSet<String> {
+    pub fn tags_with_symbols(&self, symbols: &str) -> HashSet<String> {
         let mut tags = HashSet::new();
         for word in format!("{} {}", self.title, self.body).split_whitespace() {
-            let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@');
-            if let Some(tag) = trimmed.strip_prefix('@') {
-                if !tag.is_empty() {
-                    tags.insert(format!("@{}", tag.to_lowercase()));
+            let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric() && !symbols.contains(c));
+            if let Some(symbol) = trimmed.chars().next() {
+                if symbols.contains(symbol) {
+                    let tag = &trimmed[symbol.len_utf8()..];
+                    if !tag.is_empty() {
+                        tags.insert(format!("{}{}", symbol, tag.to_lowercase()));
+                    }
                 }
             }
         }
@@ -153,11 +157,24 @@ mod tests {
             "Met with @bob about @project.".to_string(),
             "Discussed @timeline.".to_string(),
         );
-        let tags = e.tags();
+        let tags = e.tags_with_symbols(DEFAULT_TAG_SYMBOLS);
         assert!(tags.contains("@bob"));
         assert!(tags.contains("@project"));
         assert!(tags.contains("@timeline"));
         assert_eq!(tags.len(), 3);
+    }
+
+    #[test]
+    fn test_tags_with_custom_symbols() {
+        let e = Entry::new(
+            NaiveDateTime::parse_from_str("2024-01-15 09:30", "%Y-%m-%d %H:%M").unwrap(),
+            false,
+            "A #Run and @Walk entry.".to_string(),
+            String::new(),
+        );
+        let tags = e.tags_with_symbols("#");
+        assert!(tags.contains("#run"));
+        assert!(!tags.contains("@walk"));
     }
 
     #[test]

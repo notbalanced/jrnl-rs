@@ -1,7 +1,7 @@
 use crate::entry::Entry;
 use chrono::NaiveDateTime;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Filter {
     pub on: Option<NaiveDateTime>,
     pub from: Option<NaiveDateTime>,
@@ -12,6 +12,42 @@ pub struct Filter {
     pub not: Option<String>,
     pub and: bool,
     pub limit: Option<usize>,
+    pub tag_symbols: String,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self {
+            on: None,
+            from: None,
+            to: None,
+            contains: None,
+            starred: false,
+            tagged: false,
+            not: None,
+            and: false,
+            limit: None,
+            tag_symbols: "#@".to_string(),
+        }
+    }
+}
+
+fn default_tag_prefix(symbols: &str) -> char {
+    if symbols.contains('@') {
+        '@'
+    } else {
+        symbols.chars().next().unwrap_or('@')
+    }
+}
+
+fn normalize_tag(tag: &str, symbols: &str) -> String {
+    if let Some(first) = tag.chars().next() {
+        if symbols.contains(first) {
+            return tag.to_lowercase();
+        }
+    }
+
+    format!("{}{}", default_tag_prefix(symbols), tag.to_lowercase())
 }
 
 impl Filter {
@@ -59,7 +95,7 @@ impl Filter {
             groups.push(entry.starred);
         }
         if self.tagged {
-            groups.push(!entry.tags().is_empty());
+            groups.push(!entry.tags_with_symbols(&self.tag_symbols).is_empty());
         }
 
         if self.and {
@@ -74,14 +110,10 @@ impl Filter {
             None => false,
             Some(val) => match val.as_str() {
                 "starred" => entry.starred,
-                "tagged" => !entry.tags().is_empty(),
+                "tagged" => !entry.tags_with_symbols(&self.tag_symbols).is_empty(),
                 tag => {
-                    let tag = if tag.starts_with('@') {
-                        tag.to_lowercase()
-                    } else {
-                        format!("@{}", tag.to_lowercase())
-                    };
-                    entry.tags().contains(&tag)
+                    let tag = normalize_tag(tag, &self.tag_symbols);
+                    entry.tags_with_symbols(&self.tag_symbols).contains(&tag)
                 }
             },
         }
@@ -127,6 +159,12 @@ mod tests {
         let entries = vec![entry("2024-01-01 09:00", false, "A.", "")];
         let f = Filter::default();
         assert_eq!(f.apply(&entries).len(), 1);
+    }
+
+    #[test]
+    fn test_default_filter_has_default_tag_symbols() {
+        let f = Filter::default();
+        assert_eq!(f.tag_symbols, "#@");
     }
 
     #[test]
@@ -178,6 +216,18 @@ mod tests {
             entry("2024-01-02 09:00", false, "Solo day.", ""),
         ];
         let f = Filter { not: Some("bob".to_string()), ..Default::default() };
+        let result = f.apply(&entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "Solo day.");
+    }
+
+    #[test]
+    fn test_not_tag_respects_custom_symbols() {
+        let entries = vec![
+            entry("2024-01-01 09:00", false, "Met #bob.", ""),
+            entry("2024-01-02 09:00", false, "Solo day.", ""),
+        ];
+        let f = Filter { not: Some("bob".to_string()), tag_symbols: "#".to_string(), ..Default::default() };
         let result = f.apply(&entries);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Solo day.");

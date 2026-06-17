@@ -17,7 +17,13 @@ struct JsonEntry<'a> {
 /// `--format` is given and `short` is false (i.e. the default display mode);
 /// wrapping breaks only at word boundaries. Explicit `--format text/txt/pretty`
 /// and `--short` are always shown unwrapped.
-pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: bool, linewrap: usize) -> String {
+pub fn format_entries(
+    entries: &[&Entry],
+    format: Option<FormatType>,
+    short: bool,
+    linewrap: usize,
+    tag_symbols: &str,
+) -> String {
     if short {
         return entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n");
     }
@@ -38,8 +44,8 @@ pub fn format_entries(entries: &[&Entry], format: Option<FormatType>, short: boo
             entries.iter().map(|e| e.date.format("%Y-%m-%d %H:%M").to_string()).collect::<Vec<_>>().join("\n")
         }
         Some(FormatType::Markdown) | Some(FormatType::Md) => format_markdown(entries),
-        Some(FormatType::Json) => format_json(entries),
-        Some(FormatType::Tags) => format_tags(entries),
+        Some(FormatType::Json) => format_json(entries, tag_symbols),
+        Some(FormatType::Tags) => format_tags(entries, tag_symbols),
     }
 }
 
@@ -103,7 +109,7 @@ fn format_markdown(entries: &[&Entry]) -> String {
     out.trim_end().to_string()
 }
 
-fn format_json(entries: &[&Entry]) -> String {
+fn format_json(entries: &[&Entry], tag_symbols: &str) -> String {
     let json_entries: Vec<JsonEntry> = entries
         .iter()
         .map(|e| JsonEntry {
@@ -111,27 +117,40 @@ fn format_json(entries: &[&Entry]) -> String {
             starred: e.starred,
             title: &e.title,
             body: &e.body,
-            tags: e.tags().into_iter().collect(),
+            tags: e.tags_with_symbols(tag_symbols).into_iter().collect(),
         })
         .collect();
     serde_json::to_string_pretty(&json_entries).unwrap_or_default()
 }
 
 /// Returns a list of all tags and their occurrence counts, sorted by count desc.
-fn format_tags(entries: &[&Entry]) -> String {
+fn format_tags(entries: &[&Entry], tag_symbols: &str) -> String {
     let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut total_tags = 0usize;
     for e in entries {
-        for tag in e.tags() {
+        for tag in e.tags_with_symbols(tag_symbols) {
+            total_tags += 1;
             *counts.entry(tag).or_insert(0) += 1;
         }
     }
     let mut pairs: Vec<(String, usize)> = counts.into_iter().collect();
     pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    pairs
-        .into_iter()
-        .map(|(tag, count)| format!("{:<20} : {}", tag, count))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = format!(
+        "{} {} found",
+        total_tags,
+        if total_tags == 1 { "tag" } else { "tags" }
+    );
+    if !pairs.is_empty() {
+        out.push('\n');
+        out.push_str(
+            &pairs
+                .into_iter()
+                .map(|(tag, count)| format!("{:<20} : {}", tag, count))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -152,7 +171,7 @@ mod tests {
     fn test_text_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World");
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0);
+        let out = format_entries(&refs, None, false, 0, "#@");
         assert!(out.contains("[2024-01-15 09:30] Hello."));
         assert!(out.contains("World"));
     }
@@ -161,7 +180,7 @@ mod tests {
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), false, 0);
+        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@");
         assert!(out.contains("\"title\""));
         assert!(out.contains("@world"));
     }
@@ -171,7 +190,8 @@ mod tests {
         let e1 = entry("2024-01-15 09:30", "Met @bob.", "");
         let e2 = entry("2024-01-16 09:30", "Met @bob and @alice.", "");
         let refs = vec![&e1, &e2];
-        let out = format_entries(&refs, Some(FormatType::Tags), false, 0);
+        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@");
+        assert!(out.starts_with("2 entries found"));
         assert!(out.contains("@bob"));
         assert!(out.contains("@alice"));
         assert!(out.contains("2"));
@@ -181,7 +201,7 @@ mod tests {
     fn test_short_flag_overrides_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World body text");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), true, 0);
+        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@");
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
     }
@@ -226,7 +246,7 @@ mod tests {
             "And a body with several words that also needs wrapping.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 20);
+        let out = format_entries(&refs, None, false, 20, "#@");
         for line in out.lines() {
             assert!(line.chars().count() <= 20, "line too long: {:?}", line);
         }
@@ -240,7 +260,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0);
+        let out = format_entries(&refs, None, false, 0, "#@");
         // With linewrap=0, the whole header line stays on one line.
         assert_eq!(out.lines().next().unwrap(), "[2024-01-15 09:30] A reasonably long title that would wrap if linewrap were set.");
     }
@@ -253,7 +273,7 @@ mod tests {
             "Body is ignored in short format.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, true, 20);
+        let out = format_entries(&refs, None, true, 20, "#@");
         // --short is never wrapped, regardless of linewrap.
         assert_eq!(out, e.to_short());
     }
@@ -266,7 +286,7 @@ mod tests {
             "Nor should this body wrap.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Text), false, 20);
+        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@");
         assert_eq!(out, e.to_text());
     }
 
@@ -278,7 +298,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Short), false, 20);
+        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@");
         assert_eq!(out, e.to_short());
     }
 
@@ -290,11 +310,11 @@ mod tests {
 
         // With wrapping enabled (the bug: wrap_text strips trailing
         // newlines via .lines(), which collapsed the blank line).
-        let out = format_entries(&refs, None, false, 40);
+        let out = format_entries(&refs, None, false, 40, "#@");
         assert!(out.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out);
 
         // And with wrapping disabled.
-        let out_nowrap = format_entries(&refs, None, false, 0);
+        let out_nowrap = format_entries(&refs, None, false, 0, "#@");
         assert!(out_nowrap.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use crate::entry::DEFAULT_TAG_SYMBOLS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,6 +26,9 @@ pub struct Config {
     /// Map of journal name -> journal config. "default" is used when no
     /// journal name is specified on the command line.
     pub journals: HashMap<String, JournalConfig>,
+    /// Symbols that mark a word as a tag.
+    #[serde(default = "default_tagsymbols")]
+    pub tagsymbols: String,
     /// Directory used for last-entry cookie files.
     #[serde(default = "default_cookie_dir")]
     pub cookie_dir: PathBuf,
@@ -48,6 +52,10 @@ fn default_linewrap() -> usize {
     79
 }
 
+fn default_tagsymbols() -> String {
+    DEFAULT_TAG_SYMBOLS.to_string()
+}
+
 fn default_cookie_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -67,6 +75,7 @@ impl Default for Config {
         );
         Config {
             journals,
+            tagsymbols: default_tagsymbols(),
             cookie_dir: default_cookie_dir(),
             editor: None,
             timeformat: default_timeformat(),
@@ -113,12 +122,13 @@ impl Config {
     }
 
     /// Apply --config-override KEY VALUE to this config (in-memory only).
-    /// Supported keys: "editor", "timeformat", "cookie_dir",
+    /// Supported keys: "editor", "timeformat", "cookie_dir", "tagsymbols",
     /// "journals.<name>.path", "journals.<name>.storage".
     pub fn apply_override(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
+            "tagsymbols" => self.tagsymbols = value.to_string(),
             "cookie_dir" => self.cookie_dir = PathBuf::from(value),
             "linewrap" => {
                 self.linewrap = value
@@ -234,6 +244,12 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_has_default_tagsymbols() {
+        let config = Config::default();
+        assert_eq!(config.tagsymbols, DEFAULT_TAG_SYMBOLS);
+    }
+
+    #[test]
     fn test_default_cookie_dir_uses_config_directory() {
         let config = Config::default();
         assert_eq!(config.cookie_dir, default_cookie_dir());
@@ -244,6 +260,13 @@ mod tests {
         let mut config = Config::default();
         config.apply_override("editor", "vim").unwrap();
         assert_eq!(config.editor, Some("vim".to_string()));
+    }
+
+    #[test]
+    fn test_apply_override_tagsymbols() {
+        let mut config = Config::default();
+        config.apply_override("tagsymbols", "#").unwrap();
+        assert_eq!(config.tagsymbols, "#");
     }
 
     #[test]
