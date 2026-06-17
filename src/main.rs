@@ -73,7 +73,7 @@ fn run() -> Result<()> {
     };
 
     let journal_cfg = config.get_journal(&journal_name)?;
-    let journal = Journal::from_config(&journal_name, journal_cfg, &config.cookie_dir);
+    let journal = Journal::from_config(journal_cfg);
 
     if cli.is_search_mode() {
         cmd_search(&cli, &config, &journal)
@@ -372,7 +372,6 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 /// mode) rather than all 1800 files.
 fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     let cookie_path = journal.cookie_path();
-
     if !cookie_path.exists() {
         println!("No entries found (no entry has been added yet, or the cookie file is missing).");
         return Ok(());
@@ -389,7 +388,7 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
             return Ok(());
         }
     };
-
+    
     // Load only the day file that could contain this entry — O(1) files
     // instead of O(N) for the whole journal.
     let day_entries = journal.load_entries_for_date(cookie_entry.date)?;

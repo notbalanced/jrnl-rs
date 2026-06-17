@@ -29,9 +29,6 @@ pub struct Config {
     /// Symbols that mark a word as a tag.
     #[serde(default = "default_tagsymbols")]
     pub tagsymbols: String,
-    /// Directory used for last-entry cookie files.
-    #[serde(default = "default_cookie_dir")]
-    pub cookie_dir: PathBuf,
     /// Default editor command (falls back to $EDITOR / $VISUAL if empty).
     #[serde(default)]
     pub editor: Option<String>,
@@ -56,12 +53,6 @@ fn default_tagsymbols() -> String {
     DEFAULT_TAG_SYMBOLS.to_string()
 }
 
-fn default_cookie_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("jrnl-rs")
-}
-
 impl Default for Config {
     fn default() -> Self {
         let mut journals = HashMap::new();
@@ -76,7 +67,6 @@ impl Default for Config {
         Config {
             journals,
             tagsymbols: default_tagsymbols(),
-            cookie_dir: default_cookie_dir(),
             editor: None,
             timeformat: default_timeformat(),
             linewrap: default_linewrap(),
@@ -122,14 +112,13 @@ impl Config {
     }
 
     /// Apply --config-override KEY VALUE to this config (in-memory only).
-    /// Supported keys: "editor", "timeformat", "cookie_dir", "tagsymbols",
+    /// Supported keys: "editor", "timeformat", "linewrap", "tagsymbols",
     /// "journals.<name>.path", "journals.<name>.storage".
     pub fn apply_override(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
             "tagsymbols" => self.tagsymbols = value.to_string(),
-            "cookie_dir" => self.cookie_dir = PathBuf::from(value),
             "linewrap" => {
                 self.linewrap = value
                     .parse::<usize>()
@@ -247,12 +236,6 @@ mod tests {
     fn test_default_config_has_default_tagsymbols() {
         let config = Config::default();
         assert_eq!(config.tagsymbols, DEFAULT_TAG_SYMBOLS);
-    }
-
-    #[test]
-    fn test_default_cookie_dir_uses_config_directory() {
-        let config = Config::default();
-        assert_eq!(config.cookie_dir, default_cookie_dir());
     }
 
     #[test]
