@@ -12,7 +12,7 @@ mod storage;
 use anyhow::{anyhow, Result};
 use chrono::Local;
 use clap::Parser;
-use cli::{Cli, FormatType, TagSort};
+use cli::{Cli, FormatType};
 use config::Config;
 use entry::Entry;
 use filter::Filter;
