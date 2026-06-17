@@ -12,6 +12,7 @@ const ONE_VALUE_LONG_FLAGS: &[&str] = &[
     "--not",
     "--limit",
     "--format",
+    "--sort",
     "--file",
     "--config-file",
 ];

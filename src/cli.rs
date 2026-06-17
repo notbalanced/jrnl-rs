@@ -82,6 +82,10 @@ pub struct Cli {
     #[arg(long = "tags")]
     pub tags: bool,
 
+    /// Sort order for --tags output: "freq" (by frequency, default) or "alpha" (alphabetical)
+    #[arg(long = "sort", default_value = "freq")]
+    pub sort: TagSort,
+
     /// Show the entry that was most recently added to the journal
     #[arg(long = "last")]
     pub last: bool,
@@ -112,6 +116,16 @@ pub enum FormatType {
     Tags,
     Dates,
     Pretty,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
+#[value(rename_all = "lowercase")]
+pub enum TagSort {
+    /// Sort by frequency of use, most common first (default)
+    #[default]
+    Freq,
+    /// Sort alphabetically
+    Alpha,
 }
 
 impl Cli {

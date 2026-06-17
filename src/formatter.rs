@@ -1,4 +1,4 @@
-use crate::cli::FormatType;
+use crate::cli::{FormatType, TagSort};
 use crate::entry::Entry;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ pub fn format_entries(
     short: bool,
     linewrap: usize,
     tag_symbols: &str,
+    tag_sort: TagSort,
 ) -> String {
     if short {
         return entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n");
@@ -45,8 +46,19 @@ pub fn format_entries(
         }
         Some(FormatType::Markdown) | Some(FormatType::Md) => format_markdown(entries),
         Some(FormatType::Json) => format_json(entries, tag_symbols),
-        Some(FormatType::Tags) => format_tags(entries, tag_symbols),
+        Some(FormatType::Tags) => format_tags(entries, tag_symbols, tag_sort),
     }
+}
+
+/// Render a tag summary for a list of entries.
+/// The header line is "N tags found" where N is the total number of tag
+/// occurrences across all entries (one entry with 5 tags contributes 5 to N;
+/// a tag appearing twice in the same entry's title + body counts as 1 since
+/// tags are deduplicated per entry via HashSet before summing).
+/// Tags are sorted by `sort`: frequency descending (ties broken alphabetically)
+/// or alphabetically ascending.
+pub fn format_tags_output(entries: &[&Entry], tag_symbols: &str, sort: TagSort) -> String {
+    format_tags(entries, tag_symbols, sort)
 }
 
 /// Wrap `text` so that no line exceeds `width` characters, breaking only at
@@ -124,38 +136,67 @@ fn format_json(entries: &[&Entry], tag_symbols: &str) -> String {
 }
 
 /// Returns a list of all tags and their occurrence counts, sorted by count desc.
-fn format_tags(entries: &[&Entry], tag_symbols: &str) -> String {
+fn format_tags(entries: &[&Entry], tag_symbols: &str, sort: TagSort) -> String {
+    // Count how many entries each unique tag appears in (for the per-tag counts),
+    // and separately track total tag occurrences across all entries (for the header).
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut total_tags = 0usize;
+    let mut total_occurrences: usize = 0;
     for e in entries {
-        for tag in e.tags_with_symbols(tag_symbols) {
-            total_tags += 1;
+        // Use a set per entry so a tag appearing twice in one entry counts
+        // as 1 in the per-tag count, but still adds 1 to total_occurrences.
+        let entry_tags = e.tags_with_symbols(tag_symbols);
+        total_occurrences += entry_tags.len();
+        for tag in entry_tags {
             *counts.entry(tag).or_insert(0) += 1;
         }
     }
+
     let mut pairs: Vec<(String, usize)> = counts.into_iter().collect();
-    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let mut out = format!(
-        "{} {} found",
-        total_tags,
-        if total_tags == 1 { "tag" } else { "tags" }
-    );
-    if !pairs.is_empty() {
-        out.push('\n');
-        out.push_str(
-            &pairs
-                .into_iter()
-                .map(|(tag, count)| format!("{:<20} : {}", tag, count))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+
+    match sort {
+        TagSort::Freq => {
+            // Descending by count, ties broken alphabetically.
+            pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        }
+        TagSort::Alpha => {
+            // Ascending alphabetically, ties broken by descending count.
+            pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        }
     }
+
+    // Compute column width for the tag names so counts align neatly.
+    let tag_col_width = pairs
+        .iter()
+        .map(|(tag, _)| tag.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(10); // minimum column width
+
+    let header = format!(
+        "{} {} found",
+        total_occurrences,
+        if total_occurrences == 1 { "tag" } else { "tags" }
+    );
+
+    if pairs.is_empty() {
+        return format!("{}\n(no tags found)", header);
+    }
+    let mut out = header;
+    out.push('\n');
+    out.push_str(
+        &pairs
+            .into_iter()
+            .map(|(tag, count)| format!("{:<width$} : {}", tag, count, width = tag_col_width + 1))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::TagSort;
     use chrono::NaiveDateTime;
 
     fn entry(date: &str, title: &str, body: &str) -> Entry {
@@ -171,7 +212,7 @@ mod tests {
     fn test_text_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World");
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@");
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
         assert!(out.contains("[2024-01-15 09:30] Hello."));
         assert!(out.contains("World"));
     }
@@ -180,7 +221,7 @@ mod tests {
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@");
+        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@", TagSort::Freq);
         assert!(out.contains("\"title\""));
         assert!(out.contains("@world"));
     }
@@ -190,8 +231,8 @@ mod tests {
         let e1 = entry("2024-01-15 09:30", "Met @bob.", "");
         let e2 = entry("2024-01-16 09:30", "Met @bob and @alice.", "");
         let refs = vec![&e1, &e2];
-        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@");
-        assert!(out.starts_with("2 entries found"));
+        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@", TagSort::Freq);
+        assert!(out.starts_with("3 tags found"), "got: {:?}", out);
         assert!(out.contains("@bob"));
         assert!(out.contains("@alice"));
         assert!(out.contains("2"));
@@ -201,7 +242,7 @@ mod tests {
     fn test_short_flag_overrides_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World body text");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@");
+        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@", TagSort::Freq);
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
     }
@@ -246,7 +287,7 @@ mod tests {
             "And a body with several words that also needs wrapping.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 20, "#@");
+        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq);
         for line in out.lines() {
             assert!(line.chars().count() <= 20, "line too long: {:?}", line);
         }
@@ -260,7 +301,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@");
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
         // With linewrap=0, the whole header line stays on one line.
         assert_eq!(out.lines().next().unwrap(), "[2024-01-15 09:30] A reasonably long title that would wrap if linewrap were set.");
     }
@@ -273,7 +314,7 @@ mod tests {
             "Body is ignored in short format.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, true, 20, "#@");
+        let out = format_entries(&refs, None, true, 20, "#@", TagSort::Freq);
         // --short is never wrapped, regardless of linewrap.
         assert_eq!(out, e.to_short());
     }
@@ -286,7 +327,7 @@ mod tests {
             "Nor should this body wrap.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@");
+        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq);
         assert_eq!(out, e.to_text());
     }
 
@@ -298,7 +339,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@");
+        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@", TagSort::Freq);
         assert_eq!(out, e.to_short());
     }
 
@@ -310,11 +351,98 @@ mod tests {
 
         // With wrapping enabled (the bug: wrap_text strips trailing
         // newlines via .lines(), which collapsed the blank line).
-        let out = format_entries(&refs, None, false, 40, "#@");
+        let out = format_entries(&refs, None, false, 40, "#@", TagSort::Freq);
         assert!(out.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out);
 
         // And with wrapping disabled.
-        let out_nowrap = format_entries(&refs, None, false, 0, "#@");
+        let out_nowrap = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
         assert!(out_nowrap.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
+    }
+
+    #[test]
+    fn test_format_tags_counts_occurrences_in_header() {
+        // @bob appears in both title and body of one entry — counts as 1 occurrence
+        // (deduplicated per entry via HashSet), so header should say "1 tag found".
+        let e = entry("2024-01-15 09:30", "Met @bob today.", "Talked to @bob about plans.");
+        let refs = vec![&e];
+        let out = format_tags_output(&refs, "#@", TagSort::Freq);
+        assert!(out.starts_with("1 tag found"), "expected '1 tag found', got: {:?}", out);
+        assert!(out.contains("@bob"));
+        assert!(out.contains(": 1"));
+    }
+
+    #[test]
+    fn test_format_tags_total_occurrences_header() {
+        // 2 entries with #run = 2 occurrences; 1 entry with no tags = 0 occurrences.
+        // Total = 2 tags found.
+        let e1 = entry("2024-01-15 09:30", "First #run entry.", "");
+        let e2 = entry("2024-01-16 09:30", "Second #run entry.", "");
+        let e3 = entry("2024-01-17 09:30", "No tags here.", "");
+        let refs = vec![&e1, &e2, &e3];
+        let out = format_tags_output(&refs, "#@", TagSort::Freq);
+        assert!(out.starts_with("2 tags found"), "expected '2 tags found', got: {:?}", out);
+        assert!(out.contains("#run"));
+        assert!(out.contains(": 2"));
+    }
+
+    #[test]
+    fn test_format_tags_multi_tag_entry_sums_correctly() {
+        // 3 entries: e1 has 1 tag, e2 has 2 tags, e3 has 3 tags = 6 total.
+        let e1 = entry("2024-01-15 09:30", "Entry with #run.", "");
+        let e2 = entry("2024-01-16 09:30", "Entry with #run and #shoes.", "");
+        let e3 = entry("2024-01-17 09:30", "Entry with #run and #shoes and #food.", "");
+        let refs = vec![&e1, &e2, &e3];
+        let out = format_tags_output(&refs, "#@", TagSort::Freq);
+        assert!(out.starts_with("6 tags found"), "expected '6 tags found', got: {:?}", out);
+        let lines: Vec<&str> = out.lines().collect();
+        // #run (3) should come before #shoes (2) which should come before #food (1)
+        let run_pos = lines.iter().position(|l| l.contains("#run")).unwrap();
+        let shoes_pos = lines.iter().position(|l| l.contains("#shoes")).unwrap();
+        let food_pos = lines.iter().position(|l| l.contains("#food")).unwrap();
+        assert!(run_pos < shoes_pos, "#run should appear before #shoes");
+        assert!(shoes_pos < food_pos, "#shoes should appear before #food");
+    }
+
+    #[test]
+    fn test_format_tags_sort_alphabetically() {
+        let e1 = entry("2024-01-15 09:30", "Entry with #run.", "");
+        let e2 = entry("2024-01-16 09:30", "Entry with #food.", "");
+        let e3 = entry("2024-01-17 09:30", "Entry with #beer.", "");
+        let refs = vec![&e1, &e2, &e3];
+        let out = format_tags_output(&refs, "#@", TagSort::Alpha);
+        let lines: Vec<&str> = out.lines().collect();
+        let beer_pos = lines.iter().position(|l| l.contains("#beer")).unwrap();
+        let food_pos = lines.iter().position(|l| l.contains("#food")).unwrap();
+        let run_pos = lines.iter().position(|l| l.contains("#run")).unwrap();
+        assert!(beer_pos < food_pos, "#beer should come before #food alphabetically");
+        assert!(food_pos < run_pos, "#food should come before #run alphabetically");
+    }
+
+    #[test]
+    fn test_format_tags_custom_symbol_hash_only() {
+        let e = entry("2024-01-15 09:30", "A #run with @bob.", "");
+        let refs = vec![&e];
+        // With '#' only as tag symbol, @bob should not appear
+        let out = format_tags_output(&refs, "#", TagSort::Freq);
+        assert!(out.starts_with("1 tag found"), "got: {:?}", out);
+        assert!(out.contains("#run"));
+        assert!(!out.contains("@bob"));
+    }
+
+    #[test]
+    fn test_format_tags_no_tags_message() {
+        let e = entry("2024-01-15 09:30", "Plain entry with no tags.", "");
+        let refs = vec![&e];
+        let out = format_tags_output(&refs, "#@", TagSort::Freq);
+        assert!(out.starts_with("0 tags found"), "got: {:?}", out);
+        assert!(out.contains("no tags found"));
+    }
+
+    #[test]
+    fn test_format_tags_singular_tag() {
+        let e = entry("2024-01-15 09:30", "One #run.", "");
+        let refs = vec![&e];
+        let out = format_tags_output(&refs, "#@", TagSort::Freq);
+        assert!(out.starts_with("1 tag found"), "got: {:?}", out);
     }
 }

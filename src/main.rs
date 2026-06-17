@@ -12,7 +12,7 @@ mod storage;
 use anyhow::{anyhow, Result};
 use chrono::Local;
 use clap::Parser;
-use cli::{Cli, FormatType};
+use cli::{Cli, FormatType, TagSort};
 use config::Config;
 use entry::Entry;
 use filter::Filter;
@@ -319,20 +319,21 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     }
 
     if cli.tags {
-        let refs: Vec<&Entry> = matched.iter().collect();
-        let out = formatter::format_entries(
-            &refs,
-            Some(FormatType::Tags),
-            false,
-            config.linewrap,
-            &config.tagsymbols,
-        );
+        // When --tags is used alone (no date/search filters), show tags across
+        // the entire journal. When combined with filters (e.g. --from, --starred),
+        // show tags only within the matched set.
+        let tag_entries: Vec<&Entry> = if has_search_filters(cli) {
+            matched.iter().collect()
+        } else {
+            entries.iter().collect()
+        };
+        let out = formatter::format_tags_output(&tag_entries, &config.tagsymbols, cli.sort);
         println!("{}", out);
         return Ok(());
     }
 
     let refs: Vec<&Entry> = matched.iter().collect();
-    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap, &config.tagsymbols);
+    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap, &config.tagsymbols, cli.sort);
 
     if let Some(file_path) = &cli.file {
         std::fs::write(file_path, &out)
@@ -343,6 +344,20 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// True if the CLI has any date/content/attribute filter flags set (i.e. the
+/// user explicitly limited the set of entries). Used to decide whether
+/// `--tags` should show tags for the whole journal or only the matched subset.
+fn has_search_filters(cli: &Cli) -> bool {
+    cli.on.is_some()
+        || cli.from.is_some()
+        || cli.to.is_some()
+        || cli.contains.is_some()
+        || cli.starred
+        || cli.tagged
+        || cli.not.is_some()
+        || cli.n.is_some()
 }
 
 fn build_filter(cli: &Cli, config: &Config) -> Result<Filter> {
