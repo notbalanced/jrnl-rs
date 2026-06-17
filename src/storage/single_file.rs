@@ -1,6 +1,7 @@
 use super::JournalStore;
 use crate::entry::{parse_entries, Entry};
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,6 +24,30 @@ impl JournalStore for SingleFileStore {
         let content = fs::read_to_string(&self.path)
             .with_context(|| format!("Failed to read journal file {}", self.path.display()))?;
         Ok(parse_entries(&content).into_iter().last())
+    }
+
+    fn load_entries_for_date(&self, date: chrono::NaiveDateTime) -> Result<Vec<Entry>> {
+        // Single-file mode has no way to avoid reading the whole file, but
+        // we filter to only return entries matching the requested date.
+        let target = date.date();
+        let all = self.load_entries()?;
+        Ok(all.into_iter().filter(|e| e.date_only() == target).collect())
+    }
+
+    fn load_entries_in_range(
+        &self,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<Vec<Entry>> {
+        // Single-file mode must read everything; filter by date afterward.
+        let all = self.load_entries()?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                let d = e.date_only();
+                from.map(|f| d >= f).unwrap_or(true) && to.map(|t| d <= t).unwrap_or(true)
+            })
+            .collect())
     }
 
     fn load_entries(&self) -> Result<Vec<Entry>> {

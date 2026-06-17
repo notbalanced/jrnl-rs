@@ -1,6 +1,7 @@
 use super::JournalStore;
 use crate::entry::{parse_entries, Entry};
 use anyhow::{Context, Result};
+use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,28 +26,89 @@ impl FolderStore {
     /// Walk root/*/*/*.txt and return all day files found, sorted by path
     /// (which corresponds to chronological order given the YYYY/MM/DD layout).
     fn day_files(&self) -> Result<Vec<PathBuf>> {
+        self.day_files_in_range(None, None)
+    }
+
+    /// Walk root/*/*/*.txt, skipping year/month/day directories that fall
+    /// entirely outside [from, to] (inclusive). Either bound may be None
+    /// (meaning "no lower/upper limit"). Returns files sorted by path.
+    fn day_files_in_range(
+        &self,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         if !self.root.exists() {
             return Ok(files);
         }
-        for year_entry in fs::read_dir(&self.root)
+
+        let from_year = from.map(|d| d.year());
+        let to_year   = to.map(|d| d.year());
+
+        let mut year_dirs: Vec<_> = fs::read_dir(&self.root)
             .with_context(|| format!("Failed to read directory {}", self.root.display()))?
-        {
-            let year_entry = year_entry?;
-            if !year_entry.file_type()?.is_dir() {
-                continue;
-            }
-            for month_entry in fs::read_dir(year_entry.path())? {
-                let month_entry = month_entry?;
-                if !month_entry.file_type()?.is_dir() {
-                    continue;
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .collect();
+        year_dirs.sort_by_key(|e| e.file_name());
+
+        for year_entry in year_dirs {
+            // Parse the directory name as a year number; skip non-numeric dirs.
+            let year: i32 = match year_entry.file_name().to_string_lossy().parse() {
+                Ok(y) => y,
+                Err(_) => continue,
+            };
+            // Prune: skip this year if it's entirely outside the range.
+            if from_year.map(|fy| year < fy).unwrap_or(false) { continue; }
+            if to_year.map(|ty| year > ty).unwrap_or(false)   { continue; }
+
+            let mut month_dirs: Vec<_> = fs::read_dir(year_entry.path())?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .collect();
+            month_dirs.sort_by_key(|e| e.file_name());
+
+            for month_entry in month_dirs {
+                let month: u32 = match month_entry.file_name().to_string_lossy().parse() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                // Prune: first day of this month is after `to`, or last day
+                // of this month is before `from`.
+                if let Some(from_date) = from {
+                    // Last possible day of this month: use day 1 of next month minus 1.
+                    let last_of_month = last_day_of_month(year, month);
+                    if last_of_month < from_date { continue; }
                 }
-                for day_entry in fs::read_dir(month_entry.path())? {
-                    let day_entry = day_entry?;
+                if let Some(to_date) = to {
+                    // First day of this month.
+                    let first_of_month = NaiveDate::from_ymd_opt(year, month, 1)
+                        .unwrap_or(to_date);
+                    if first_of_month > to_date { continue; }
+                }
+
+                let mut day_files_in_month: Vec<_> = fs::read_dir(month_entry.path())?
+                    .filter_map(|e| e.ok())
+                    .collect();
+                day_files_in_month.sort_by_key(|e| e.file_name());
+
+                for day_entry in day_files_in_month {
                     let path = day_entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("txt") {
-                        files.push(path);
+                    if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+                        continue;
                     }
+                    // Parse the stem as a day number for fine-grained pruning.
+                    let stem = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(|s| s.parse::<u32>().ok());
+                    if let Some(day) = stem {
+                        let file_date = NaiveDate::from_ymd_opt(year, month, day);
+                        if let Some(fd) = file_date {
+                            if from.map(|f| fd < f).unwrap_or(false) { continue; }
+                            if to.map(|t| fd > t).unwrap_or(false)   { continue; }
+                        }
+                    }
+                    files.push(path);
                 }
             }
         }
@@ -56,6 +118,26 @@ impl FolderStore {
 }
 
 impl JournalStore for FolderStore {
+    fn load_entries_in_range(
+        &self,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<Vec<Entry>> {
+        let mut entries = Vec::new();
+        for file in self.day_files_in_range(from, to)? {
+            let content = fs::read_to_string(&file)
+                .with_context(|| format!("Failed to read journal file {}", file.display()))?;
+            // The file-level pruning already ensured this file is within
+            // range, but entries within the file are filtered individually
+            // to handle --on (single day) and exact time boundaries cleanly.
+            // The caller's Filter will apply the real datetime comparison;
+            // here we just load every entry from the qualifying files.
+            entries.extend(parse_entries(&content));
+        }
+        entries.sort_by_key(|e| e.date);
+        Ok(entries)
+    }
+
     fn last_entry(&self) -> Result<Option<Entry>> {
         let mut latest: Option<(std::fs::Metadata, PathBuf)> = None;
 
@@ -75,6 +157,22 @@ impl JournalStore for FolderStore {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read journal file {}", path.display()))?;
         Ok(parse_entries(&content).into_iter().last())
+    }
+
+    fn load_entries_for_date(&self, date: NaiveDateTime) -> Result<Vec<Entry>> {
+        let path = self.path_for_date(&date);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read journal file {}", path.display()))?;
+        let target_date = date.date();
+        let mut entries: Vec<Entry> = parse_entries(&content)
+            .into_iter()
+            .filter(|e| e.date_only() == target_date)
+            .collect();
+        entries.sort_by_key(|e| e.date);
+        Ok(entries)
     }
 
     fn load_entries(&self) -> Result<Vec<Entry>> {
@@ -157,6 +255,20 @@ impl JournalStore for FolderStore {
 }
 
 /// Render a day file's contents from its entries (jrnl text format, sorted by time).
+/// Return the last calendar date of the given year/month.
+fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
+    // First day of the next month, minus one day.
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .unwrap()
+        .pred_opt()
+        .unwrap()
+}
+
 fn render_day_file(entries: &[Entry]) -> String {
     let mut content = String::new();
     for e in entries {
@@ -203,7 +315,7 @@ fn prune_empty_dirs(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDateTime;
+    use chrono::{NaiveDate, NaiveDateTime};
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
 
@@ -326,5 +438,101 @@ mod tests {
         let new_path = dir.path().join("2026").join("06").join("01.txt");
         let new_content = std::fs::read_to_string(&new_path).unwrap();
         assert!(new_content.contains("Edited body"));
+    }
+
+    #[test]
+    fn test_load_entries_in_range_returns_only_matching_files() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2022-01-01 09:00", "2022 entry.", "")).unwrap();
+        store.append_entry(&entry("2024-06-15 09:00", "Mid 2024 entry.", "")).unwrap();
+        store.append_entry(&entry("2026-06-01 09:00", "Early June 2026.", "")).unwrap();
+        store.append_entry(&entry("2026-06-10 09:00", "Mid June 2026.", "")).unwrap();
+        store.append_entry(&entry("2026-07-04 09:00", "July 2026 entry.", "")).unwrap();
+
+        let from = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let to   = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+
+        let entries = store.load_entries_in_range(Some(from), Some(to)).unwrap();
+
+        assert_eq!(entries.len(), 2, "should only load June 2026 entries");
+        assert!(entries.iter().any(|e| e.title == "Early June 2026."));
+        assert!(entries.iter().any(|e| e.title == "Mid June 2026."));
+    }
+
+    #[test]
+    fn test_load_entries_in_range_open_ended_from() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2022-01-01 09:00", "Old entry.", "")).unwrap();
+        store.append_entry(&entry("2026-06-01 09:00", "New entry.", "")).unwrap();
+
+        let from = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let entries = store.load_entries_in_range(Some(from), None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "New entry.");
+    }
+
+    #[test]
+    fn test_load_entries_in_range_open_ended_to() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2022-01-01 09:00", "Old entry.", "")).unwrap();
+        store.append_entry(&entry("2026-06-01 09:00", "New entry.", "")).unwrap();
+
+        let to = NaiveDate::from_ymd_opt(2023, 12, 31).unwrap();
+        let entries = store.load_entries_in_range(None, Some(to)).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Old entry.");
+    }
+
+    #[test]
+    fn test_load_entries_in_range_no_bounds_returns_all() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2022-01-01 09:00", "Entry A.", "")).unwrap();
+        store.append_entry(&entry("2026-06-01 09:00", "Entry B.", "")).unwrap();
+
+        let entries = store.load_entries_in_range(None, None).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_load_entries_in_range_skips_years_outside_range() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        // Create entries across many years.
+        for year in [2020u32, 2021, 2022, 2023, 2024, 2025, 2026] {
+            store.append_entry(&entry(
+                &format!("{}-06-01 09:00", year),
+                &format!("Entry {}.", year),
+                "",
+            )).unwrap();
+        }
+
+        let from = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let to   = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap();
+
+        let entries = store.load_entries_in_range(Some(from), Some(to)).unwrap();
+
+        // Should only return 2024 and 2025 entries, not 2020-2023 or 2026.
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.title == "Entry 2024."));
+        assert!(entries.iter().any(|e| e.title == "Entry 2025."));
+    }
+
+    #[test]
+    fn test_last_day_of_month() {
+        assert_eq!(last_day_of_month(2024, 1), NaiveDate::from_ymd_opt(2024, 1, 31).unwrap());
+        assert_eq!(last_day_of_month(2024, 2), NaiveDate::from_ymd_opt(2024, 2, 29).unwrap()); // leap year
+        assert_eq!(last_day_of_month(2023, 2), NaiveDate::from_ymd_opt(2023, 2, 28).unwrap());
+        assert_eq!(last_day_of_month(2024, 12), NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
     }
 }

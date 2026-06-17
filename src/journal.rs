@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 /// Wraps the appropriate storage backend for a journal config.
 pub struct Journal {
+    pub name: String,
     store: Box<dyn JournalStore>,
     cookie_path: PathBuf,
 }
@@ -21,13 +22,37 @@ impl Journal {
             StorageMode::Folder => Box::new(FolderStore::new(cfg.path.clone())),
         };
         let cookie_path = cookie_path_for(name, cfg, cookie_dir);
-        Journal { store, cookie_path }
+        Journal { name: name.to_string(), store, cookie_path }
     }
 
     pub fn load_entries(&self) -> Result<Vec<Entry>> {
         self.store.load_entries()
     }
 
+    /// Load entries within the given date range. For folder-mode journals
+    /// this only opens the day files that fall within [from, to], making
+    /// date-bounded queries much faster on large journals.
+    pub fn load_entries_in_range(
+        &self,
+        from: Option<chrono::NaiveDate>,
+        to: Option<chrono::NaiveDate>,
+    ) -> Result<Vec<Entry>> {
+        self.store.load_entries_in_range(from, to)
+    }
+
+    /// Load only the entries whose date matches the given datetime's date.
+    /// For folder-mode journals this reads a single YYYY/MM/DD.txt file;
+    /// for single-file journals it still reads the whole file (unavoidable)
+    /// but then filters by date so the caller only sees the relevant entries.
+    pub fn load_entries_for_date(&self, date: NaiveDateTime) -> Result<Vec<Entry>> {
+        self.store.load_entries_for_date(date)
+    }
+
+    pub fn cookie_path(&self) -> &PathBuf {
+        &self.cookie_path
+    }
+
+    #[allow(dead_code)]
     pub fn last_entry(&self) -> Result<Option<Entry>> {
         if self.cookie_path.exists() {
             let content = fs::read_to_string(&self.cookie_path)

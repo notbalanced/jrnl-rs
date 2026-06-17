@@ -9,7 +9,7 @@ mod formatter;
 mod journal;
 mod storage;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Local;
 use clap::Parser;
 use cli::{Cli, FormatType};
@@ -283,7 +283,37 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
 
 /// Handle all search/filter/action flags.
 fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
-    let entries = journal.load_entries()?;
+    // --last is a special case: we look up the cookie file and then only
+    // load that one day's file (or the single journal file). We must handle
+    // it before the full load_entries() call below so we never read all
+    // 1800 day files just to show the most recently added entry.
+    if cli.last {
+        return cmd_last(cli, config, journal);
+    }
+
+    let entries = {
+        // Extract calendar-date bounds from the CLI flags so we can tell
+        // FolderStore which day files to skip entirely. This is purely a
+        // loading optimisation; the Filter still applies the full datetime
+        // comparison afterwards so results are identical to loading everything.
+        let from_date = cli.on.as_deref()
+            .map(parse_required_date)
+            .transpose()?
+            .or_else(|| cli.from.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+            .map(|dt| dt.date());
+
+        let to_date = cli.on.as_deref()
+            .map(parse_required_date)
+            .transpose()?
+            .or_else(|| cli.to.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+            .map(|dt| dt.date());
+
+        if from_date.is_some() || to_date.is_some() {
+            journal.load_entries_in_range(from_date, to_date)?
+        } else {
+            journal.load_entries()?
+        }
+    };
 
     let filter = build_filter(cli, config)?;
     let matched_refs = filter.apply(&entries);
@@ -303,19 +333,6 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 
     if cli.edit {
         return cmd_edit(config, journal, &entries, &matched);
-    }
-
-    if cli.last {
-        if let Some(entry) = journal.last_entry()? {
-            if cli.short {
-                println!("{}", entry.to_short());
-            } else {
-                println!("{}", entry.to_text());
-            }
-        } else {
-            println!("No entries found.");
-        }
-        return Ok(());
     }
 
     if cli.tags {
@@ -349,6 +366,55 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
 /// True if the CLI has any date/content/attribute filter flags set (i.e. the
 /// user explicitly limited the set of entries). Used to decide whether
 /// `--tags` should show tags for the whole journal or only the matched subset.
+/// Handle --last: display the most recently *added* entry without loading
+/// the entire journal. Reads the cookie file for the entry's date, then
+/// uses load_entries_for_date() to read only that single day file (folder
+/// mode) rather than all 1800 files.
+fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
+    let cookie_path = journal.cookie_path();
+
+    if !cookie_path.exists() {
+        println!("No entries found (no entry has been added yet, or the cookie file is missing).");
+        return Ok(());
+    }
+
+    // Parse the cookie file to get the entry's identity and date.
+    let cookie_content = std::fs::read_to_string(cookie_path)
+        .with_context(|| format!("Failed to read cookie file {}", cookie_path.display()))?;
+    let cookie_entries = entry::parse_entries(&cookie_content);
+    let cookie_entry = match cookie_entries.into_iter().last() {
+        Some(e) => e,
+        None => {
+            println!("No entries found (cookie file is empty or malformed).");
+            return Ok(());
+        }
+    };
+
+    // Load only the day file that could contain this entry — O(1) files
+    // instead of O(N) for the whole journal.
+    let day_entries = journal.load_entries_for_date(cookie_entry.date)?;
+    let found = day_entries.iter().find(|e| {
+        e.date == cookie_entry.date
+            && e.title == cookie_entry.title
+            && e.body == cookie_entry.body
+    });
+
+    match found {
+        None => {
+            println!("Last entry no longer found (it may have been edited or deleted).");
+        }
+        Some(e) => {
+            let out = if cli.short {
+                e.to_short()
+            } else {
+                formatter::wrap_text(e.to_text().trim_end(), config.linewrap)
+            };
+            println!("{}", out);
+        }
+    }
+    Ok(())
+}
+
 fn has_search_filters(cli: &Cli) -> bool {
     cli.on.is_some()
         || cli.from.is_some()
