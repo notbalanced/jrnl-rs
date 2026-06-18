@@ -9,8 +9,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
   build:
     name: Build ${{ matrix.target }}
+    needs: create-release # wait for release to exist first
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
