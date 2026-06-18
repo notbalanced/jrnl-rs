@@ -78,9 +78,13 @@ pub fn parse_entries(content: &str) -> Vec<Entry> {
 
     for line in content.lines() {
         if let Some((date, rest)) = try_parse_header(line) {
-            // flush previous entry
+            // flush previous entry, trimming trailing blank body lines
             if let Some((d, starred, title, body_lines)) = current.take() {
-                entries.push(Entry::new(d, starred, title, body_lines.join("\n")));
+                let mut lines = body_lines;
+                while lines.last().map(|l: &String| l.is_empty()).unwrap_or(false) {
+                    lines.pop();
+                }
+                entries.push(Entry::new(d, starred, title, lines.join("\n")));
             }
             let (starred, title) = if let Some(t) = rest.strip_prefix('*') {
                 (true, t.to_string())
@@ -185,5 +189,28 @@ mod tests {
         let reparsed = parse_entries(&rendered);
         assert_eq!(reparsed[0].title, entries[0].title);
         assert_eq!(reparsed[0].body, entries[0].body);
+    }
+
+    #[test]
+    fn test_body_consistent_whether_first_or_non_first_entry() {
+        // Regression: when an entry is flushed mid-loop (because another
+        // entry follows it), its body was not trimmed of trailing blank
+        // lines -- but when it's the last/only entry it was trimmed.
+        // This caused --last to fail to match when the cookie entry was
+        // parsed as a lone entry but the day file had it as a non-last entry.
+        let two_entries = "[2024-01-15 09:00] First entry.\nFirst body.\n\n[2024-01-15 10:00] Second entry.\nSecond body.\n";
+        let one_entry  = "[2024-01-15 09:00] First entry.\nFirst body.\n\n";
+
+        let parsed_two = parse_entries(two_entries);
+        let parsed_one = parse_entries(one_entry);
+
+        // The body of "First entry" should be the same regardless of whether
+        // it's followed by another entry or not.
+        assert_eq!(
+            parsed_two[0].body, parsed_one[0].body,
+            "body should be consistent: got {:?} vs {:?}",
+            parsed_two[0].body, parsed_one[0].body
+        );
+        assert_eq!(parsed_two[0].body, "First body.");
     }
 }

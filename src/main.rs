@@ -394,8 +394,8 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     let day_entries = journal.load_entries_for_date(cookie_entry.date)?;
     let found = day_entries.iter().find(|e| {
         e.date == cookie_entry.date
-            && e.title == cookie_entry.title
-            && e.body == cookie_entry.body
+            && e.title.trim() == cookie_entry.title.trim()
+            && e.body.trim() == cookie_entry.body.trim()
     });
 
     match found {
