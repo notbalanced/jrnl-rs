@@ -28,7 +28,8 @@ fn main() {
 fn run() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let prog = raw_args.first().cloned().unwrap_or_else(|| "jrnl".to_string());
-    let rest = &raw_args[1.min(raw_args.len())..];
+    let rest1 = &raw_args[1.min(raw_args.len())..];
+    let rest = &args::normalize_flags(rest1); // Allow 1 dash flags
 
     // Load a lightweight config first (honoring --config-file if present)
     // just to know which journal names are configured, so we can recognize
@@ -388,7 +389,7 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
             return Ok(());
         }
     };
-    
+
     // Load only the day file that could contain this entry — O(1) files
     // instead of O(N) for the whole journal.
     let day_entries = journal.load_entries_for_date(cookie_entry.date)?;

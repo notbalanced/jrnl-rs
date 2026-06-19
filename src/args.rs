@@ -4,12 +4,12 @@ use std::collections::HashSet;
 /// argument ("--from 2026-01-01") or via "--flag=value".
 const ONE_VALUE_LONG_FLAGS: &[&str] = &[
     "--template",
-    "--on",
-    "--from",
-    "--to",
-    "--until",
-    "--contains",
-    "--not",
+    "--on",         "-on",
+    "--from",       "-from",
+    "--to",         "-to",
+    "--until",      "-until",
+    "--contains",   "-contains",
+    "--not",        "-not",
     "--limit",
     "--format",
     "--sort",
@@ -28,9 +28,9 @@ const TWO_VALUE_LONG_FLAGS: &[&str] = &["--config-override"];
 const BOOL_FLAGS: &[&str] = &[
     "--debug",
     "--list",
-    "--and",
-    "--starred",
-    "--tagged",
+    "--and",        "-and",
+    "--starred",    "-starred",
+    "--tagged",     "-tagged",
     "--edit",
     "--delete",
     "--tags",
@@ -42,6 +42,22 @@ const BOOL_FLAGS: &[&str] = &[
     "-V",
 ];
 
+/// Normalize command line option flags
+/// Convert flags with 1 dash (-on, -from) to 2 dashes (--on, --from)
+pub fn normalize_flags(args: &[String]) -> Vec<String> {
+    args.iter().map(|arg| match arg.as_str() {
+        "-on"       => "--on".to_string(),
+        "-from"     => "--from".to_string(),
+        "-to"       => "--to".to_string(),
+        "-until"    => "--until".to_string(),
+        "-contains" => "--contains".to_string(),
+        "-starred"  => "--starred".to_string(),
+        "-tagged"   => "--tagged".to_string(),
+        "-and"      => "--and".to_string(),
+        "-not"      => "--not".to_string(),
+        _           => arg.clone(),
+    }).collect()
+}
 /// Scan `args` (the program's arguments, not including argv[0]) for the
 /// first "bare" positional token -- i.e. a token that isn't a recognized
 /// flag and isn't consumed as a flag's value. If that token matches a name
