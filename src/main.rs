@@ -292,11 +292,16 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
         return cmd_last(cli, config, journal);
     }
 
-    let entries = {
-        // Extract calendar-date bounds from the CLI flags so we can tell
-        // FolderStore which day files to skip entirely. This is purely a
-        // loading optimisation; the Filter still applies the full datetime
-        // comparison afterwards so results are identical to loading everything.
+    // CRITICAL: --edit and --delete must operate against the FULL journal,
+    // never a date-range-scoped subset. save_all() treats any day file not
+    // represented in the entries it's given as deleted -- so if `entries`
+    // here were scoped to e.g. `--on today`, save_all would wipe out every
+    // other day file in the journal. The range-scoped load_entries_in_range
+    // optimization above is only safe for read-only display (search/tags),
+    // never as the basis for a reconcile+save_all round trip.
+    let entries = if requires_full_journal_load(cli) {
+        journal.load_entries()?
+    } else {
         let from_date = cli.on.as_deref()
             .map(parse_required_date)
             .transpose()?
@@ -424,6 +429,12 @@ fn has_search_filters(cli: &Cli) -> bool {
         || cli.tagged
         || cli.not.is_some()
         || cli.n.is_some()
+}
+
+/// `--edit` and `--delete` must always work from the full journal so
+/// save_all() can preserve untouched day files.
+fn requires_full_journal_load(cli: &Cli) -> bool {
+    cli.edit || cli.delete
 }
 
 fn build_filter(cli: &Cli, config: &Config) -> Result<Filter> {

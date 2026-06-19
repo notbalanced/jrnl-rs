@@ -36,5 +36,14 @@ pub trait JournalStore {
     /// Replace the entire contents of storage with the given entries.
     /// Used after --edit or --delete reconciliation.
     /// `entries` is assumed sorted by date ascending.
+    ///
+    /// # DANGER
+    /// `entries` MUST be the full, unfiltered journal (everything that
+    /// should remain after the edit/delete), never a date-range- or
+    /// filter-scoped subset. For folder-mode storage, any day file whose
+    /// date isn't represented in `entries` is treated as intentionally
+    /// emptied and is DELETED from disk. Passing a partial entry set (e.g.
+    /// the result of `load_entries_in_range`) will silently destroy every
+    /// day file outside that range.
     fn save_all(&self, entries: &[Entry]) -> Result<()>;
 }
