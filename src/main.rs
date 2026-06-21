@@ -420,6 +420,16 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     Ok(())
 }
 
+/// True if this invocation must load the entire journal rather than a
+/// date-range-scoped subset. --edit and --delete both end with a call to
+/// save_all(), which treats any day file not represented in the entries it's
+/// given as deleted -- so passing it anything less than the full journal
+/// risks silently destroying entries outside the scoped range. See the
+/// DANGER doc comment on JournalStore::save_all for details.
+fn requires_full_journal_load(cli: &Cli) -> bool {
+    cli.edit || cli.delete
+}
+
 fn has_search_filters(cli: &Cli) -> bool {
     cli.on.is_some()
         || cli.from.is_some()
@@ -429,12 +439,6 @@ fn has_search_filters(cli: &Cli) -> bool {
         || cli.tagged
         || cli.not.is_some()
         || cli.n.is_some()
-}
-
-/// `--edit` and `--delete` must always work from the full journal so
-/// save_all() can preserve untouched day files.
-fn requires_full_journal_load(cli: &Cli) -> bool {
-    cli.edit || cli.delete
 }
 
 fn build_filter(cli: &Cli, config: &Config) -> Result<Filter> {
@@ -667,5 +671,32 @@ mod tests {
         let (title, body) = split_title_body("Run Walk with the Boys - 1.07 mi. / 00:20:18 18:58 pace.");
         assert_eq!(title, "Run Walk with the Boys - 1.07 mi. / 00:20:18 18:58 pace.");
         assert_eq!(body, "");
+    }
+
+    #[test]
+    fn test_requires_full_journal_load_for_edit() {
+        let mut cli = Cli::parse_from(["jrnl-rs", "--on", "today", "--edit"]);
+        assert!(requires_full_journal_load(&cli));
+
+        cli.edit = false;
+        assert!(!requires_full_journal_load(&cli));
+    }
+
+    #[test]
+    fn test_requires_full_journal_load_for_delete() {
+        let cli = Cli::parse_from(["jrnl-rs", "--on", "today", "--delete"]);
+        assert!(requires_full_journal_load(&cli));
+    }
+
+    #[test]
+    fn test_requires_full_journal_load_false_for_plain_search() {
+        let cli = Cli::parse_from(["jrnl-rs", "--on", "today"]);
+        assert!(!requires_full_journal_load(&cli));
+    }
+
+    #[test]
+    fn test_requires_full_journal_load_false_for_tags() {
+        let cli = Cli::parse_from(["jrnl-rs", "--from", "yesterday", "--tags"]);
+        assert!(!requires_full_journal_load(&cli));
     }
 }

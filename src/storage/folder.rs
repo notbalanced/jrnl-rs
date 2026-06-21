@@ -535,4 +535,45 @@ mod tests {
         assert_eq!(last_day_of_month(2023, 2), NaiveDate::from_ymd_opt(2023, 2, 28).unwrap());
         assert_eq!(last_day_of_month(2024, 12), NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
     }
+
+    #[test]
+    fn test_save_all_with_date_scoped_entries_deletes_everything_outside_range() {
+        // DOCUMENTS THE DANGER (see doc comment on the trait method): if a
+        // caller passes save_all() a date-range-scoped subset instead of the
+        // full journal, every day file outside that subset is deleted. This
+        // was the root cause of a real data-loss bug where
+        // `jrnl --on today --edit` wiped out years of entries, because the
+        // caller mistakenly used `load_entries_in_range(today, today)`'s
+        // result as the basis for save_all() instead of the full journal.
+        //
+        // This test exists to make that failure mode explicit and easy to
+        // find if it's ever reintroduced upstream -- the fix belongs in the
+        // CALLER (always load the full journal before edit/delete), not here.
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2022-01-01 09:00", "Old entry.", "")).unwrap();
+        store.append_entry(&entry("2025-03-10 09:00", "Another old entry.", "")).unwrap();
+        store.append_entry(&entry("2026-06-19 09:00", "Today entry.", "")).unwrap();
+
+        // Simulate the buggy caller: load only "today"'s range, then save_all
+        // with just that scoped result (as if the user deleted today's entry,
+        // leaving zero entries in the scoped set).
+        let today = NaiveDate::from_ymd_opt(2026, 6, 19).unwrap();
+        let scoped = store.load_entries_in_range(Some(today), Some(today)).unwrap();
+        assert_eq!(scoped.len(), 1, "sanity check: scoped load should only see today's entry");
+
+        // Pretend the user deleted today's entry in the editor -> empty scoped set.
+        store.save_all(&[]).unwrap();
+
+        // BUG: this would wipe 2022 and 2025 too, because they weren't
+        // represented in the (empty) scoped entries passed to save_all.
+        let remaining = store.load_entries().unwrap();
+        assert_eq!(
+            remaining.len(), 0,
+            "this assertion documents the bug: save_all() with scoped/empty \
+             entries deletes the WHOLE journal, not just the scoped range. \
+             Callers must always pass the full journal to save_all()."
+        );
+    }
 }

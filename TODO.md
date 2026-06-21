@@ -9,6 +9,6 @@
 - [ ] Add pretty output with indent character read from config
 - [ ] Add init prompt to create config file
 - [ ] Modify config to support the original jrnl.yaml file format
-- [ ] Add version command line option --version, -v
+- [x] Add version command line option --version, -v (Release v0.2.4)
 - [ ]
 

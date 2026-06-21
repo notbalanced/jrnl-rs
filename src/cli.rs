@@ -2,7 +2,8 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "jrnl",
+    name = "jrnl-rs",
+    version,
     about = "Collect your thoughts and notes without leaving the command line",
     disable_help_subcommand = true
 )]
