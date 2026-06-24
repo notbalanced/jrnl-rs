@@ -27,6 +27,11 @@ pub trait JournalStore {
     /// single-file mode it reads the whole file and filters by date.
     fn load_entries_for_date(&self, date: NaiveDateTime) -> Result<Vec<Entry>>;
 
+    /// Load the most recent N entries, sorted by date ascending.
+    /// For folder-mode this scans only the newest day files until N entries are
+    /// found. For single-file mode this currently reads the whole file.
+    fn load_last_n_entries(&self, n: usize) -> Result<Vec<Entry>>;
+
     /// Return the most recently added entry as stored on disk.
     fn last_entry(&self) -> Result<Option<Entry>>;
 

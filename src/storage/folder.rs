@@ -29,6 +29,12 @@ impl FolderStore {
         self.day_files_in_range(None, None)
     }
 
+    fn day_files_reverse(&self) -> Result<Vec<PathBuf>> {
+        let mut files = self.day_files()?;
+        files.reverse();
+        Ok(files)
+    }
+
     /// Walk root/*/*/*.txt, skipping year/month/day directories that fall
     /// entirely outside [from, to] (inclusive). Either bound may be None
     /// (meaning "no lower/upper limit"). Returns files sorted by path.
@@ -172,6 +178,27 @@ impl JournalStore for FolderStore {
             .filter(|e| e.date_only() == target_date)
             .collect();
         entries.sort_by_key(|e| e.date);
+        Ok(entries)
+    }
+
+    fn load_last_n_entries(&self, n: usize) -> Result<Vec<Entry>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut entries: Vec<Entry> = Vec::new();
+        for file in self.day_files_reverse()? {
+            let content = fs::read_to_string(&file)
+                .with_context(|| format!("Failed to read journal file {}", file.display()))?;
+            entries.extend(parse_entries(&content));
+            if entries.len() >= n {
+                break;
+            }
+        }
+        entries.sort_by_key(|e| e.date);
+        if entries.len() > n {
+            entries = entries.split_off(entries.len() - n);
+        }
         Ok(entries)
     }
 
@@ -526,6 +553,23 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|e| e.title == "Entry 2024."));
         assert!(entries.iter().any(|e| e.title == "Entry 2025."));
+    }
+
+    #[test]
+    fn test_load_last_n_entries_returns_most_recent_entries() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+
+        store.append_entry(&entry("2024-06-01 09:00", "Entry A.", "")).unwrap();
+        store.append_entry(&entry("2024-06-02 09:00", "Entry B.", "")).unwrap();
+        store.append_entry(&entry("2024-06-03 09:00", "Entry C.", "")).unwrap();
+        store.append_entry(&entry("2024-06-04 09:00", "Entry D.", "")).unwrap();
+
+        let entries = store.load_last_n_entries(2).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Entry C.");
+        assert_eq!(entries[1].title, "Entry D.");
     }
 
     #[test]

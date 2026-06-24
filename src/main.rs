@@ -351,6 +351,28 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     // never as the basis for a reconcile+save_all round trip.
     let entries = if requires_full_journal_load(cli) {
         journal.load_entries()?
+    } else if let Some(n) = cli.n {
+        if !has_non_limit_search_filters(cli) && !cli.tags {
+            journal.load_last_n_entries(n)?
+        } else {
+            let from_date = cli.on.as_deref()
+                .map(parse_required_date)
+                .transpose()?
+                .or_else(|| cli.from.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+                .map(|dt| dt.date());
+
+            let to_date = cli.on.as_deref()
+                .map(parse_required_date)
+                .transpose()?
+                .or_else(|| cli.to.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+                .map(|dt| dt.date());
+
+            if from_date.is_some() || to_date.is_some() {
+                journal.load_entries_in_range(from_date, to_date)?
+            } else {
+                journal.load_entries()?
+            }
+        }
     } else {
         let from_date = cli.on.as_deref()
             .map(parse_required_date)
@@ -489,6 +511,16 @@ fn has_search_filters(cli: &Cli) -> bool {
         || cli.tagged
         || cli.not.is_some()
         || cli.n.is_some()
+}
+
+fn has_non_limit_search_filters(cli: &Cli) -> bool {
+    cli.on.is_some()
+        || cli.from.is_some()
+        || cli.to.is_some()
+        || cli.contains.is_some()
+        || cli.starred
+        || cli.tagged
+        || cli.not.is_some()
 }
 
 fn build_filter(cli: &Cli, config: &Config) -> Result<Filter> {

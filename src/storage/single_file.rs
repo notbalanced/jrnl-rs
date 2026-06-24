@@ -50,6 +50,17 @@ impl JournalStore for SingleFileStore {
             .collect())
     }
 
+    fn load_last_n_entries(&self, n: usize) -> Result<Vec<Entry>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut entries = self.load_entries()?;
+        if entries.len() > n {
+            entries = entries.split_off(entries.len() - n);
+        }
+        Ok(entries)
+    }
+
     fn load_entries(&self) -> Result<Vec<Entry>> {
         if !self.path.exists() {
             return Ok(Vec::new());

@@ -47,6 +47,11 @@ impl Journal {
         self.store.load_entries_for_date(date)
     }
 
+    /// Load the most recent N entries, sorted by date ascending.
+    pub fn load_last_n_entries(&self, n: usize) -> Result<Vec<Entry>> {
+        self.store.load_last_n_entries(n)
+    }
+
     pub fn cookie_path(&self) -> &PathBuf {
         &self.cookie_path
     }
