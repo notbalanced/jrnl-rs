@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "jrnl-rs",
+    name = "jrnl",
     version,
     about = "Collect your thoughts and notes without leaving the command line",
     disable_help_subcommand = true
@@ -15,6 +15,10 @@ pub struct Cli {
     /// List all configured journals
     #[arg(long)]
     pub list: bool,
+
+    /// Create a default config file at the expected location
+    #[arg(long)]
+    pub init: bool,
 
     // ---- Writing ----
     /// Path to template file

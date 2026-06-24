@@ -12,7 +12,7 @@ mod storage;
 use anyhow::{anyhow, Context, Result};
 use chrono::Local;
 use clap::Parser;
-use cli::{Cli, FormatType};
+use cli::Cli;
 use config::Config;
 use entry::Entry;
 use filter::Filter;
@@ -47,8 +47,12 @@ fn run() -> Result<()> {
     full_args.extend(modified_args);
     let cli = Cli::parse_from(full_args);
 
-    // Load config (with optional override path).
-    let mut config = Config::load(cli.config_file.as_deref())?;
+    // Load config (with optional override path), noting whether a config
+    // file was actually found so we can warn the user if not.
+    let loaded = config::Config::load_with_status(cli.config_file.as_deref())?;
+    let config_found = loaded.found;
+    let config_path = loaded.config_path.clone();
+    let mut config = loaded.config;
 
     // Apply one-off --config-override KEY VALUE.
     if let Some(kvs) = &cli.config_override {
@@ -59,9 +63,23 @@ fn run() -> Result<()> {
         }
     }
 
+    // --init: create a default config file and exit.
+    if cli.init {
+        return cmd_init(cli.config_file.as_deref());
+    }
+
+    // Warn (once, to stderr) if no config file was found and this isn't
+    // one of the standalone commands that don't need a journal.
+    if !config_found && !cli.list && !cli.init {
+        eprintln!(
+            "warning: no config file found at {}\n         Run `jrnl-rs --init` to create one, or use `--config-file` to specify a path.\n",
+            config_path.display()
+        );
+    }
+
     // --list: list configured journals and exit.
     if cli.list {
-        return cmd_list_journals(&config, cli.format);
+        return cmd_list_journals(&config, config_found, &config_path);
     }
 
     // Determine which journal to use: prefer the journal name extracted from
@@ -101,24 +119,56 @@ fn resolve_journal_name(config: &Config, mut text: Vec<String>) -> (String, Vec<
     ("default".to_string(), text)
 }
 
-/// --list: print configured journal names and their paths.
-fn cmd_list_journals(config: &Config, format: Option<FormatType>) -> Result<()> {
-    match format {
-        Some(FormatType::Json) => {
-            let map: std::collections::HashMap<&String, &std::path::Path> = config
-                .journals
-                .iter()
-                .map(|(k, v)| (k, v.path.as_path()))
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&map)?);
-        }
-        _ => {
-            for (name, jcfg) in &config.journals {
-                println!("{}: {}", name, jcfg.path.display());
-            }
-        }
+/// --list: print configured journal names with pretty formatting.
+fn cmd_list_journals(config: &Config, config_found: bool, config_path: &std::path::Path) -> Result<()> {
+    if config_found {
+        println!("Config: {}\n", config_path.display());
+    } else {
+        println!("Config: (no config file found — using defaults)\n");
+        println!("  Run `jrnl-rs --init` to create a config file.\n");
     }
+
+    println!("Journals:");
+
+    // Sort journals alphabetically, but put "default" first.
+    let mut names: Vec<&String> = config.journals.keys().collect();
+    names.sort_by(|a, b| {
+        if a.as_str() == "default" { std::cmp::Ordering::Less }
+        else if b.as_str() == "default" { std::cmp::Ordering::Greater }
+        else { a.cmp(b) }
+    });
+
+    for name in names {
+        let jcfg = &config.journals[name];
+        let mode = match jcfg.storage {
+            config::StorageMode::File   => "file",
+            config::StorageMode::Folder => "folder",
+        };
+        let exists_marker = if jcfg.path.exists() { "" } else { "  (path not found)" };
+        println!("  • {:<12} {}  [{}]{}", name, jcfg.path.display(), mode, exists_marker);
+    }
+
     Ok(())
+}
+
+/// --init: create a default config file at the expected location.
+fn cmd_init(config_file: Option<&str>) -> Result<()> {
+    match config::Config::write_default(config_file) {
+        Ok(path) => {
+            println!("Created config file: {}", path.display());
+            println!();
+            println!("Edit it to add your journals, for example:");
+            println!();
+            println!("  journals:");
+            println!("    default: ~/journal/");
+            println!("    work:    ~/work-journal.txt");
+            println!();
+            println!("Folder journals:  use a path with a trailing /  (or no file extension)");
+            println!("File journals:    use a path ending in .txt (or any file extension)");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Parse free-form entry text (as typed on the command line, via stdin, or
@@ -548,10 +598,7 @@ mod tests {
         let mut config = Config::default();
         config.journals.insert(
             "work".to_string(),
-            config::JournalConfig {
-                path: std::path::PathBuf::from("/tmp/work.txt"),
-                storage: config::StorageMode::File,
-            },
+            config::JournalConfig::new(std::path::PathBuf::from("/tmp/work.txt")),
         );
         config
     }

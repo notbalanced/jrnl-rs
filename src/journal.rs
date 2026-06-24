@@ -153,6 +153,7 @@ fn write_cookie_file(path: &PathBuf, entry: &Entry) -> Result<()> {
 mod tests {
     use super::*;
     use chrono::NaiveDateTime;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn entry(date: &str, title: &str, body: &str) -> Entry {
@@ -165,10 +166,7 @@ mod tests {
     }
 
     fn dummy_journal() -> Journal {
-        let cfg = JournalConfig {
-            path: std::path::PathBuf::from("/tmp/unused.txt"),
-            storage: StorageMode::File,
-        };
+        let cfg = JournalConfig::new(std::path::PathBuf::from("/tmp/unused.txt"));
         Journal::from_config(&cfg)
     }
 
@@ -177,10 +175,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let cookie_dir = dir.path();
 
-        let journal = Journal::from_config(&JournalConfig {
-            path: dir.path().join("journal.txt"),
-            storage: StorageMode::File,
-        });
+        let journal = Journal::from_config(&JournalConfig::new(
+            dir.path().join("journal.txt"),
+        ));
 
         assert_eq!(journal.cookie_path, cookie_dir.join("journal.txt.last"));
     }
@@ -219,11 +216,9 @@ mod tests {
     #[test]
     fn test_last_entry_prefers_newest_modified_day_file() {
         let dir = tempdir().unwrap();
-        //let cookie_dir = dir.path().join("cookies");
-        let journal = Journal::from_config(&JournalConfig {
-            path: dir.path().to_path_buf(),
-            storage: StorageMode::Folder,
-        });
+        // Use trailing slash so JournalConfig::new infers StorageMode::Folder
+        let folder_path = PathBuf::from(format!("{}/", dir.path().display()));
+        let journal = Journal::from_config(&JournalConfig::new(folder_path));
 
         let older = Entry::new(
             NaiveDateTime::parse_from_str("2026-06-10 09:00", "%Y-%m-%d %H:%M").unwrap(),
