@@ -90,6 +90,8 @@ pub struct Colors {
     pub tags: String,
     #[serde(default = "default_color")]
     pub title: String,
+    #[serde(default = "default_color")]
+    pub contains: String,
 }
 
 fn default_color() -> String {
@@ -103,6 +105,7 @@ impl Default for Colors {
             date: default_color(),
             tags: default_color(),
             title: default_color(),
+            contains: default_color(),
         }
     }
 }
@@ -113,6 +116,7 @@ impl Colors {
             || !self.date.eq_ignore_ascii_case("none")
             || !self.tags.eq_ignore_ascii_case("none")
             || !self.title.eq_ignore_ascii_case("none")
+            || !self.contains.eq_ignore_ascii_case("none")
     }
 }
 
@@ -244,6 +248,7 @@ impl Config {
                         "date" => self.colors.date = value.to_string(),
                         "tags" => self.colors.tags = value.to_string(),
                         "title" => self.colors.title = value.to_string(),
+                        "contains" => self.colors.contains = value.to_string(),
                         _ => return Err(anyhow!("Unknown config override key '{}'", key)),
                     }
                 } else if let Some(rest) = other.strip_prefix("journals.") {

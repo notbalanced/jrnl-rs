@@ -436,6 +436,7 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
         &config.tagsymbols,
         cli.sort,
         &config.colors,
+        cli.contains.as_deref(),
     );
 
     if let Some(file_path) = &cli.file {
