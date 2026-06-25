@@ -7,7 +7,8 @@
 - [x] Add version command line option --version, -v (Release v0.2.4)
 - [x] Add init prompt to create config file (Release v0.3.0)
 - [x] Modify config to support the original jrnl.yaml file format (Release v0.3.0)
-- [ ] Add color to tags, time/date, title. Also support plain output without color.
+- [x] Add color to tags, time/date, title. Also support plain output without color. (Release v0.4.0)
+- [x] Fix issue with windows performance on the `-n` option (Release v0.4.0)
 - [ ] Add pretty output with indent character read from config
 
 
