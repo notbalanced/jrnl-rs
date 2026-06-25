@@ -573,6 +573,68 @@ mod tests {
     }
 
     #[test]
+    fn test_load_last_n_entries_zero_returns_empty() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+        store.append_entry(&entry("2024-06-01 09:00", "Entry.", "")).unwrap();
+        assert_eq!(store.load_last_n_entries(0).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_load_last_n_entries_n_larger_than_journal() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+        store.append_entry(&entry("2024-06-01 09:00", "Only entry.", "")).unwrap();
+        let entries = store.load_last_n_entries(100).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "Only entry.");
+    }
+
+    #[test]
+    fn test_load_last_n_entries_sorted_by_date_ascending() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+        // Entries in different months — reverse walking should pick 3 most recent.
+        store.append_entry(&entry("2024-01-15 09:00", "January.", "")).unwrap();
+        store.append_entry(&entry("2024-03-20 09:00", "March.", "")).unwrap();
+        store.append_entry(&entry("2024-06-05 09:00", "June A.", "")).unwrap();
+        store.append_entry(&entry("2024-06-10 09:00", "June B.", "")).unwrap();
+
+        let entries = store.load_last_n_entries(3).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Must be returned sorted oldest-first within the selection.
+        assert_eq!(entries[0].title, "March.");
+        assert_eq!(entries[1].title, "June A.");
+        assert_eq!(entries[2].title, "June B.");
+    }
+
+    #[test]
+    fn test_load_last_n_entries_multiple_entries_same_day() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+        // Two entries in the same day file — requesting n=1 should return the
+        // most recent one only; requesting n=2 should return both.
+        store.append_entry(&entry("2024-06-10 09:00", "Morning.", "")).unwrap();
+        store.append_entry(&entry("2024-06-10 18:00", "Evening.", "")).unwrap();
+
+        let one = store.load_last_n_entries(1).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].title, "Evening.");
+
+        let two = store.load_last_n_entries(2).unwrap();
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].title, "Morning.");
+        assert_eq!(two[1].title, "Evening.");
+    }
+
+    #[test]
+    fn test_load_last_n_entries_on_empty_journal() {
+        let dir = tempdir().unwrap();
+        let store = FolderStore::new(dir.path().to_path_buf());
+        assert_eq!(store.load_last_n_entries(5).unwrap().len(), 0);
+    }
+
+    #[test]
     fn test_last_day_of_month() {
         assert_eq!(last_day_of_month(2024, 1), NaiveDate::from_ymd_opt(2024, 1, 31).unwrap());
         assert_eq!(last_day_of_month(2024, 2), NaiveDate::from_ymd_opt(2024, 2, 29).unwrap()); // leap year

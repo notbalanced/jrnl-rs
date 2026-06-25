@@ -352,45 +352,20 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     let entries = if requires_full_journal_load(cli) {
         journal.load_entries()?
     } else if let Some(n) = cli.n {
+        // Fast path: -n with no other search filters — walk files newest-first
+        // and stop as soon as we have enough entries without reading the whole
+        // journal. Falls back to a full/range load when combined with other
+        // filters (starred, contains, etc.) since we can't know upfront how
+        // many files to read.
         if !has_non_limit_search_filters(cli) && !cli.tags {
             journal.load_last_n_entries(n)?
         } else {
-            let from_date = cli.on.as_deref()
-                .map(parse_required_date)
-                .transpose()?
-                .or_else(|| cli.from.as_deref().map(parse_required_date).and_then(|r| r.ok()))
-                .map(|dt| dt.date());
-
-            let to_date = cli.on.as_deref()
-                .map(parse_required_date)
-                .transpose()?
-                .or_else(|| cli.to.as_deref().map(parse_required_date).and_then(|r| r.ok()))
-                .map(|dt| dt.date());
-
-            if from_date.is_some() || to_date.is_some() {
-                journal.load_entries_in_range(from_date, to_date)?
-            } else {
-                journal.load_entries()?
-            }
+            let (from_date, to_date) = extract_date_bounds(cli)?;
+            load_by_date_bounds(journal, from_date, to_date)?
         }
     } else {
-        let from_date = cli.on.as_deref()
-            .map(parse_required_date)
-            .transpose()?
-            .or_else(|| cli.from.as_deref().map(parse_required_date).and_then(|r| r.ok()))
-            .map(|dt| dt.date());
-
-        let to_date = cli.on.as_deref()
-            .map(parse_required_date)
-            .transpose()?
-            .or_else(|| cli.to.as_deref().map(parse_required_date).and_then(|r| r.ok()))
-            .map(|dt| dt.date());
-
-        if from_date.is_some() || to_date.is_some() {
-            journal.load_entries_in_range(from_date, to_date)?
-        } else {
-            journal.load_entries()?
-        }
+        let (from_date, to_date) = extract_date_bounds(cli)?;
+        load_by_date_bounds(journal, from_date, to_date)?
     };
 
     let filter = build_filter(cli, config)?;
@@ -499,6 +474,37 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Extract calendar-date bounds from --on / --from / --to for use with
+/// load_entries_in_range. Both values may be None if no date flags were given.
+fn extract_date_bounds(cli: &Cli) -> Result<(Option<chrono::NaiveDate>, Option<chrono::NaiveDate>)> {
+    let from_date = cli.on.as_deref()
+        .map(parse_required_date)
+        .transpose()?
+        .or_else(|| cli.from.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+        .map(|dt| dt.date());
+
+    let to_date = cli.on.as_deref()
+        .map(parse_required_date)
+        .transpose()?
+        .or_else(|| cli.to.as_deref().map(parse_required_date).and_then(|r| r.ok()))
+        .map(|dt| dt.date());
+
+    Ok((from_date, to_date))
+}
+
+/// Load entries using date bounds when available, falling back to full load.
+fn load_by_date_bounds(
+    journal: &Journal,
+    from: Option<chrono::NaiveDate>,
+    to: Option<chrono::NaiveDate>,
+) -> Result<Vec<Entry>> {
+    if from.is_some() || to.is_some() {
+        journal.load_entries_in_range(from, to)
+    } else {
+        journal.load_entries()
+    }
 }
 
 /// True if this invocation must load the entire journal rather than a
@@ -786,5 +792,78 @@ mod tests {
     fn test_requires_full_journal_load_false_for_tags() {
         let cli = Cli::parse_from(["jrnl-rs", "--from", "yesterday", "--tags"]);
         assert!(!requires_full_journal_load(&cli));
+    }
+
+    // ---------- has_non_limit_search_filters ----------
+
+    #[test]
+    fn test_has_non_limit_search_filters_false_for_n_only() {
+        // -n alone should NOT trigger a full load — it uses the fast path.
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5"]);
+        assert!(!has_non_limit_search_filters(&cli));
+    }
+
+    #[test]
+    fn test_has_non_limit_search_filters_true_for_starred() {
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5", "--starred"]);
+        assert!(has_non_limit_search_filters(&cli));
+    }
+
+    #[test]
+    fn test_has_non_limit_search_filters_true_for_contains() {
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5", "--contains", "run"]);
+        assert!(has_non_limit_search_filters(&cli));
+    }
+
+    #[test]
+    fn test_has_non_limit_search_filters_true_for_from() {
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5", "--from", "yesterday"]);
+        assert!(has_non_limit_search_filters(&cli));
+    }
+
+    #[test]
+    fn test_has_non_limit_search_filters_true_for_tagged() {
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5", "--tagged"]);
+        assert!(has_non_limit_search_filters(&cli));
+    }
+
+    #[test]
+    fn test_has_non_limit_search_filters_true_for_not() {
+        let cli = Cli::parse_from(["jrnl-rs", "-n", "5", "--not", "bob"]);
+        assert!(has_non_limit_search_filters(&cli));
+    }
+
+    // ---------- extract_date_bounds ----------
+
+    #[test]
+    fn test_extract_date_bounds_no_flags() {
+        let cli = Cli::parse_from(["jrnl-rs", "--from", "2000-01-01"]);
+        // Confirm we get a from date back.
+        let cli_empty = Cli::parse_from(["jrnl-rs", "--starred"]);
+        let (from, to) = extract_date_bounds(&cli_empty).unwrap();
+        assert!(from.is_none());
+        assert!(to.is_none());
+        let _ = cli; // suppress unused warning
+    }
+
+    #[test]
+    fn test_extract_date_bounds_from_and_to() {
+        let cli = Cli::parse_from(["jrnl-rs", "--from", "2024-01-01", "--to", "2024-06-30"]);
+        let (from, to) = extract_date_bounds(&cli).unwrap();
+        assert!(from.is_some());
+        assert!(to.is_some());
+        assert_eq!(from.unwrap(), chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+        assert_eq!(to.unwrap(), chrono::NaiveDate::from_ymd_opt(2024, 6, 30).unwrap());
+    }
+
+    #[test]
+    fn test_extract_date_bounds_on_sets_both() {
+        let cli = Cli::parse_from(["jrnl-rs", "--on", "2024-03-15"]);
+        let (from, to) = extract_date_bounds(&cli).unwrap();
+        // --on should populate both from and to with the same date.
+        assert!(from.is_some());
+        assert!(to.is_some());
+        assert_eq!(from.unwrap(), chrono::NaiveDate::from_ymd_opt(2024, 3, 15).unwrap());
+        assert_eq!(to.unwrap(), chrono::NaiveDate::from_ymd_opt(2024, 3, 15).unwrap());
     }
 }

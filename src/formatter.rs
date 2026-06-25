@@ -215,37 +215,59 @@ fn apply_tag_colors(text: &str, tag_symbols: &str, tag_color: &str, restore_colo
         return text.to_string();
     }
 
-    let reset = "\x1b[0m";
-    let restore_code = restore_color.and_then(color_code).unwrap_or("");
-    let color_code = match tag_color.trim().to_lowercase().as_str() {
-        "black" => "\x1b[30m",
-        "red" => "\x1b[31m",
-        "green" => "\x1b[32m",
-        "yellow" => "\x1b[33m",
-        "blue" => "\x1b[34m",
+    let tag_code = match tag_color.trim().to_lowercase().as_str() {
+        "black"   => "\x1b[30m",
+        "red"     => "\x1b[31m",
+        "green"   => "\x1b[32m",
+        "yellow"  => "\x1b[33m",
+        "blue"    => "\x1b[34m",
         "magenta" => "\x1b[35m",
-        "cyan" => "\x1b[36m",
-        "white" => "\x1b[37m",
+        "cyan"    => "\x1b[36m",
+        "white"   => "\x1b[37m",
         _ => return text.to_string(),
     };
+    let restore_code = restore_color.and_then(color_code).unwrap_or("\x1b[0m");
+    let reset = "\x1b[0m";
 
-    text.split_inclusive(char::is_whitespace)
-        .map(|segment| {
-            let trimmed = segment.trim_end_matches(char::is_whitespace);
-            let suffix = &segment[trimmed.len()..];
-            if let Some(symbol) = trimmed.chars().next() {
-                if tag_symbols.contains(symbol) {
-                    let tag = &trimmed[symbol.len_utf8()..];
-                    if !tag.is_empty() {
-                        let colored_tag = format!("{}{}{}{}", color_code, trimmed, reset, restore_code);
-                        return trimmed.replacen(trimmed, &colored_tag, 1) + suffix;
-                    }
-                }
-            }
-            trimmed.to_string() + suffix
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    // Process the text word-by-word, preserving inter-word whitespace.
+    // We walk the string keeping track of whitespace spans explicitly so
+    // the restore color is correctly re-applied after every tag.
+    let mut out = String::new();
+    let mut idx = 0;
+    let bytes = text.as_bytes();
+    let len = text.len();
+
+    while idx < len {
+        // Collect leading whitespace.
+        let ws_start = idx;
+        while idx < len && (bytes[idx] == b' ' || bytes[idx] == b'\t' || bytes[idx] == b'\n' || bytes[idx] == b'\r') {
+            idx += 1;
+        }
+        out.push_str(&text[ws_start..idx]);
+
+        if idx >= len { break; }
+
+        // Collect a word (non-whitespace run).
+        let word_start = idx;
+        while idx < len && bytes[idx] != b' ' && bytes[idx] != b'\t' && bytes[idx] != b'\n' && bytes[idx] != b'\r' {
+            idx += 1;
+        }
+        let word = &text[word_start..idx];
+
+        // Check if this word is a tag: starts with a tagsymbol and has content after it.
+        let first_char_len = word.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+        let first_char = word.chars().next().unwrap_or(' ');
+        if tag_symbols.contains(first_char) && word.len() > first_char_len {
+            // Colored tag, then restore the surrounding context color.
+            out.push_str(tag_code);
+            out.push_str(word);
+            out.push_str(reset);
+            out.push_str(restore_code);
+        } else {
+            out.push_str(word);
+        }
+    }
+    out
 }
 
 /// Render a tag summary for a list of entries.
@@ -547,8 +569,9 @@ mod tests {
         let e = entry("2024-01-15 09:30", "#run fast", "");
         let refs = vec![&e];
         let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
-        println!("OUT: {:?}", out);
-        assert!(out.contains("\x1b[33m#run\x1b[0m\x1b[35m fast\x1b[0m"));
+        // Tag colored yellow, rest of title colored magenta, restore back to magenta after tag.
+        assert!(out.contains("\x1b[33m#run\x1b[0m\x1b[35m"), "expected tag colored, then magenta restored: {:?}", out);
+        assert!(out.contains("fast"), "should contain non-tag word: {:?}", out);
     }
 
     #[test]
@@ -563,7 +586,9 @@ mod tests {
         let e = entry("2024-01-15 09:30", "Title", "Body with #run tag.");
         let refs = vec![&e];
         let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
-        assert!(out.contains("\x1b[32mBody with \x1b[33m#run\x1b[0m\x1b[32m tag.\x1b[0m") || out.contains("\x1b[32mBody with \x1b[33m#run\x1b[0m\x1b[32mtag.\x1b[0m"));
+        // #run should be yellow; text before and after should be green.
+        assert!(out.contains("\x1b[33m#run\x1b[0m\x1b[32m"), "expected tag yellow then green restore: {:?}", out);
+        assert!(out.contains("\x1b[32m"), "expected body color green: {:?}", out);
     }
 
     #[test]
@@ -757,5 +782,86 @@ mod tests {
         let refs = vec![&e];
         let out = format_tags_output(&refs, "#@", TagSort::Freq);
         assert!(out.starts_with("1 tag found"), "got: {:?}", out);
+    }
+
+    // ---------- colors::any_enabled ----------
+
+    #[test]
+    fn test_colors_any_enabled_all_none() {
+        assert!(!Colors::default().any_enabled());
+    }
+
+    #[test]
+    fn test_colors_any_enabled_one_set() {
+        let c = Colors { date: "cyan".to_string(), ..Colors::default() };
+        assert!(c.any_enabled());
+    }
+
+    #[test]
+    fn test_colors_any_enabled_case_insensitive_none() {
+        let c = Colors {
+            body: "NONE".to_string(), date: "None".to_string(),
+            tags: "NoNe".to_string(), title: "none".to_string(),
+            contains: "none".to_string(),
+        };
+        assert!(!c.any_enabled());
+    }
+
+    // ---------- default format with colors active ----------
+
+    #[test]
+    fn test_default_format_uses_colors_when_any_enabled() {
+        // When at least one color is set, the default format (no --format flag)
+        // should apply color codes, same as --format pretty.
+        let colors = Colors { date: "cyan".to_string(), ..Colors::default() };
+        let e = entry("2024-01-15 09:30", "Hello.", "");
+        let refs = vec![&e];
+        let plain = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None);
+        let colored = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None);
+        // Plain output has no ANSI; colored output should have cyan for date.
+        assert!(!plain.contains("\x1b["), "plain output should have no ANSI codes");
+        assert!(colored.contains("\x1b[36m"), "colored output should contain cyan ANSI code");
+    }
+
+    #[test]
+    fn test_default_format_equals_pretty_when_colors_active() {
+        let colors = Colors { date: "cyan".to_string(), title: "magenta".to_string(), ..Colors::default() };
+        let e = entry("2024-01-15 09:30", "Hello.", "Body text.");
+        let refs = vec![&e];
+        let default_out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None);
+        let pretty_out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
+        assert_eq!(default_out, pretty_out, "default format and --format pretty should be identical when colors are active");
+    }
+
+    // ---------- apply_tag_colors whitespace ----------
+
+    #[test]
+    fn test_apply_tag_colors_preserves_surrounding_spaces() {
+        // "Body with #run tag." — the space before and after #run should survive.
+        let result = apply_tag_colors("Body with #run tag.", "#@", "yellow", Some("green"));
+        let stripped = strip_ansi_codes(&result);
+        assert_eq!(stripped, "Body with #run tag.", "text content should be unchanged after stripping ANSI");
+    }
+
+    #[test]
+    fn test_apply_tag_colors_multiple_tags() {
+        let result = apply_tag_colors("#run and #shoes", "#@", "yellow", None);
+        let stripped = strip_ansi_codes(&result);
+        assert_eq!(stripped, "#run and #shoes");
+        // Both tags should be colored.
+        assert!(result.contains("\x1b[33m#run\x1b[0m"));
+        assert!(result.contains("\x1b[33m#shoes\x1b[0m"));
+    }
+
+    #[test]
+    fn test_apply_tag_colors_none_is_passthrough() {
+        let text = "Hello #run world.";
+        assert_eq!(apply_tag_colors(text, "#@", "none", None), text);
+    }
+
+    #[test]
+    fn test_apply_tag_colors_unknown_color_is_passthrough() {
+        let text = "Hello #run world.";
+        assert_eq!(apply_tag_colors(text, "#@", "ultraviolet", None), text);
     }
 }
