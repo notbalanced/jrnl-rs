@@ -428,7 +428,15 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
     }
 
     let refs: Vec<&Entry> = matched.iter().collect();
-    let out = formatter::format_entries(&refs, cli.format, cli.short, config.linewrap, &config.tagsymbols, cli.sort);
+    let out = formatter::format_entries(
+        &refs,
+        cli.format,
+        cli.short,
+        config.linewrap,
+        &config.tagsymbols,
+        cli.sort,
+        &config.colors,
+    );
 
     if let Some(file_path) = &cli.file {
         std::fs::write(file_path, &out)

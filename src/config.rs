@@ -81,6 +81,42 @@ impl<'de> Deserialize<'de> for JournalConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Colors {
+    #[serde(default = "default_color")]
+    pub body: String,
+    #[serde(default = "default_color")]
+    pub date: String,
+    #[serde(default = "default_color")]
+    pub tags: String,
+    #[serde(default = "default_color")]
+    pub title: String,
+}
+
+fn default_color() -> String {
+    "none".to_string()
+}
+
+impl Default for Colors {
+    fn default() -> Self {
+        Self {
+            body: default_color(),
+            date: default_color(),
+            tags: default_color(),
+            title: default_color(),
+        }
+    }
+}
+
+impl Colors {
+    pub fn any_enabled(&self) -> bool {
+        !self.body.eq_ignore_ascii_case("none")
+            || !self.date.eq_ignore_ascii_case("none")
+            || !self.tags.eq_ignore_ascii_case("none")
+            || !self.title.eq_ignore_ascii_case("none")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Map of journal name -> journal config.
     pub journals: HashMap<String, JournalConfig>,
@@ -96,6 +132,9 @@ pub struct Config {
     /// Maximum line width for displayed entries. 0 disables wrapping.
     #[serde(default = "default_linewrap")]
     pub linewrap: usize,
+    /// Optional colors for pretty output.
+    #[serde(default)]
+    pub colors: Colors,
 }
 
 fn default_timeformat() -> String { "%Y-%m-%d %H:%M".to_string() }
@@ -113,6 +152,7 @@ impl Default for Config {
             editor: None,
             timeformat: default_timeformat(),
             linewrap: default_linewrap(),
+            colors: Colors::default(),
         }
     }
 }
@@ -198,7 +238,15 @@ impl Config {
                     .map_err(|_| anyhow!("Invalid linewrap value '{}' (expected a non-negative integer)", value))?;
             }
             other => {
-                if let Some(rest) = other.strip_prefix("journals.") {
+                if let Some(rest) = other.strip_prefix("colors.") {
+                    match rest {
+                        "body" => self.colors.body = value.to_string(),
+                        "date" => self.colors.date = value.to_string(),
+                        "tags" => self.colors.tags = value.to_string(),
+                        "title" => self.colors.title = value.to_string(),
+                        _ => return Err(anyhow!("Unknown config override key '{}'", key)),
+                    }
+                } else if let Some(rest) = other.strip_prefix("journals.") {
                     // Allow "journals.work=/path" shorthand or legacy
                     // "journals.work.path=/path" form.
                     if !rest.contains('.') {

@@ -1,4 +1,5 @@
 use crate::cli::{FormatType, TagSort};
+use crate::config::Colors;
 use crate::entry::Entry;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -24,30 +25,177 @@ pub fn format_entries(
     linewrap: usize,
     tag_symbols: &str,
     tag_sort: TagSort,
+    colors: &Colors,
 ) -> String {
+    let use_color = matches!(format, Some(FormatType::Pretty))
+        || (format.is_none() && colors.any_enabled());
+
     if short {
+        if use_color {
+            return entries
+                .iter()
+                .map(|e| format_entry_short(e, colors, tag_symbols))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
         return entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n");
     }
 
     match format {
-        None => entries
-            .iter()
-            .map(|e| wrap_text(e.to_text().trim_end(), linewrap))
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        Some(FormatType::Text) | Some(FormatType::Txt) | Some(FormatType::Pretty) => {
+        None => {
+            if use_color {
+                format_pretty_entries(entries, colors, tag_symbols, linewrap)
+            } else {
+                entries
+                    .iter()
+                    .map(|e| wrap_text(e.to_text().trim_end(), linewrap))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+        }
+        Some(FormatType::Text) | Some(FormatType::Txt) => {
             entries.iter().map(|e| e.to_text()).collect::<Vec<_>>().join("\n")
         }
-        Some(FormatType::Short) => {
-            entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n")
-        }
-        Some(FormatType::Dates) => {
-            entries.iter().map(|e| e.date.format("%Y-%m-%d %H:%M").to_string()).collect::<Vec<_>>().join("\n")
-        }
+        Some(FormatType::Pretty) => format_pretty_entries(entries, colors, tag_symbols, linewrap),
+        Some(FormatType::Short) => entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n"),
+        Some(FormatType::Dates) => entries
+            .iter()
+            .map(|e| e.date.format("%Y-%m-%d %H:%M").to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
         Some(FormatType::Markdown) | Some(FormatType::Md) => format_markdown(entries),
         Some(FormatType::Json) => format_json(entries, tag_symbols),
         Some(FormatType::Tags) => format_tags(entries, tag_symbols, tag_sort),
     }
+}
+
+fn format_pretty_entries(
+    entries: &[&Entry],
+    colors: &Colors,
+    tag_symbols: &str,
+    linewrap: usize,
+) -> String {
+    entries
+        .iter()
+        .map(|e| format_pretty_entry(e, colors, tag_symbols, linewrap))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn format_pretty_entry(
+    entry: &Entry,
+    colors: &Colors,
+    tag_symbols: &str,
+    linewrap: usize,
+) -> String {
+    let date_text = format!("[{}]", entry.date.format("%Y-%m-%d %H:%M"));
+    let header_text = if entry.starred {
+        format!("{} *{}", date_text, entry.title)
+    } else {
+        format!("{} {}", date_text, entry.title)
+    };
+    let header_text = if linewrap == 0 {
+        header_text
+    } else {
+        wrap_text(&header_text, linewrap)
+    };
+
+    let header = header_text
+        .lines()
+        .map(|line| {
+            if let Some(after_date) = line.strip_prefix(&format!("{} ", date_text)) {
+                let mut colored = String::new();
+                colored.push_str(&apply_color(&date_text, &colors.date));
+                colored.push(' ');
+                if entry.starred && after_date.starts_with('*') {
+                    colored.push('*');
+                    colored.push_str(&apply_color(&after_date[1..], &colors.title));
+                } else {
+                    colored.push_str(&apply_color(after_date, &colors.title));
+                }
+                apply_tag_colors(&colored, tag_symbols, &colors.tags)
+            } else {
+                apply_tag_colors(&apply_color(line, &colors.title), tag_symbols, &colors.tags)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut out = header;
+    if !entry.body.trim().is_empty() {
+        let body = if linewrap == 0 {
+            entry.body.trim().to_string()
+        } else {
+            wrap_text(entry.body.trim(), linewrap)
+        };
+        let body = apply_color(&body, &colors.body);
+        let body = apply_tag_colors(&body, tag_symbols, &colors.tags);
+        out.push('\n');
+        out.push_str(&body);
+    }
+    out
+}
+
+fn format_entry_short(entry: &Entry, colors: &Colors, tag_symbols: &str) -> String {
+    let date = apply_color(&format!("[{}]", entry.date.format("%Y-%m-%d %H:%M")), &colors.date);
+    let title = apply_color(&entry.title, &colors.title);
+    let title = apply_tag_colors(&title, tag_symbols, &colors.tags);
+    format!("{} {}{}", date, if entry.starred { "*" } else { "" }, title)
+}
+
+fn apply_color(text: &str, color: &str) -> String {
+    match color.trim().to_lowercase().as_str() {
+        "none" | "" => text.to_string(),
+        "black" => format!("\x1b[30m{}\x1b[0m", text),
+        "red" => format!("\x1b[31m{}\x1b[0m", text),
+        "green" => format!("\x1b[32m{}\x1b[0m", text),
+        "yellow" => format!("\x1b[33m{}\x1b[0m", text),
+        "blue" => format!("\x1b[34m{}\x1b[0m", text),
+        "magenta" => format!("\x1b[35m{}\x1b[0m", text),
+        "cyan" => format!("\x1b[36m{}\x1b[0m", text),
+        "white" => format!("\x1b[37m{}\x1b[0m", text),
+        _ => {
+            // Unknown color names are treated as none.
+            text.to_string()
+        }
+    }
+}
+
+fn apply_tag_colors(text: &str, tag_symbols: &str, tag_color: &str) -> String {
+    if tag_color.trim().eq_ignore_ascii_case("none") {
+        return text.to_string();
+    }
+
+    let reset = "\x1b[0m";
+    let color_code = match tag_color.trim().to_lowercase().as_str() {
+        "black" => "\x1b[30m",
+        "red" => "\x1b[31m",
+        "green" => "\x1b[32m",
+        "yellow" => "\x1b[33m",
+        "blue" => "\x1b[34m",
+        "magenta" => "\x1b[35m",
+        "cyan" => "\x1b[36m",
+        "white" => "\x1b[37m",
+        _ => return text.to_string(),
+    };
+
+    text.split_inclusive(char::is_whitespace)
+        .map(|segment| {
+            let trimmed = segment.trim_end_matches(char::is_whitespace);
+            let suffix = &segment[trimmed.len()..];
+            if let Some(symbol) = trimmed.chars().next() {
+                if tag_symbols.contains(symbol) {
+                    let tag = &trimmed[symbol.len_utf8()..];
+                    if !tag.is_empty() {
+                        let colored_tag = format!("{}{}{}{}", color_code, trimmed, reset, "");
+                        return trimmed.replacen(trimmed, &colored_tag, 1) + suffix;
+                    }
+                }
+            }
+            trimmed.to_string() + suffix
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// Render a tag summary for a list of entries.
@@ -212,7 +360,7 @@ mod tests {
     fn test_text_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World");
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default());
         assert!(out.contains("[2024-01-15 09:30] Hello."));
         assert!(out.contains("World"));
     }
@@ -221,7 +369,7 @@ mod tests {
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@", TagSort::Freq);
+        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@", TagSort::Freq, &Colors::default());
         assert!(out.contains("\"title\""));
         assert!(out.contains("@world"));
     }
@@ -231,7 +379,7 @@ mod tests {
         let e1 = entry("2024-01-15 09:30", "Met @bob.", "");
         let e2 = entry("2024-01-16 09:30", "Met @bob and @alice.", "");
         let refs = vec![&e1, &e2];
-        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@", TagSort::Freq);
+        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@", TagSort::Freq, &Colors::default());
         assert!(out.starts_with("3 tags found"), "got: {:?}", out);
         assert!(out.contains("@bob"));
         assert!(out.contains("@alice"));
@@ -242,15 +390,68 @@ mod tests {
     fn test_short_flag_overrides_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World body text");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@", TagSort::Freq);
+        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@", TagSort::Freq, &Colors::default());
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
+    }
+
+    fn strip_ansi_codes(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == 'm' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push(ch);
+        }
+        out
     }
 
     #[test]
     fn test_wrap_text_disabled_when_zero() {
         let text = "This is a fairly long line of text that would normally wrap.";
         assert_eq!(wrap_text(text, 0), text);
+    }
+
+    #[test]
+    fn test_pretty_format_wraps_header_and_body() {
+        let e = entry(
+            "2024-01-15 09:30",
+            "A title long enough to require wrapping across multiple pretty lines.",
+            "And a body with several words that also needs wrapping in pretty mode.",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &Colors::default());
+        for line in out.lines() {
+            assert!(line.chars().count() <= 20, "line too long: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn test_pretty_format_wraps_with_colors() {
+        let colors = Colors {
+            body: "green".to_string(),
+            date: "cyan".to_string(),
+            tags: "yellow".to_string(),
+            title: "magenta".to_string(),
+        };
+        let e = entry(
+            "2024-01-15 09:30",
+            "A title long enough to require wrapping across multiple pretty lines.",
+            "And a body with several words that also needs wrapping in pretty mode.",
+        );
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &colors);
+        for line in strip_ansi_codes(&out).lines() {
+            assert!(line.chars().count() <= 20, "colored line too long: {:?}", line);
+        }
     }
 
     #[test]
@@ -287,7 +488,7 @@ mod tests {
             "And a body with several words that also needs wrapping.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq);
+        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq, &Colors::default());
         for line in out.lines() {
             assert!(line.chars().count() <= 20, "line too long: {:?}", line);
         }
@@ -301,7 +502,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default());
         // With linewrap=0, the whole header line stays on one line.
         assert_eq!(out.lines().next().unwrap(), "[2024-01-15 09:30] A reasonably long title that would wrap if linewrap were set.");
     }
@@ -314,7 +515,7 @@ mod tests {
             "Body is ignored in short format.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, true, 20, "#@", TagSort::Freq);
+        let out = format_entries(&refs, None, true, 20, "#@", TagSort::Freq, &Colors::default());
         // --short is never wrapped, regardless of linewrap.
         assert_eq!(out, e.to_short());
     }
@@ -327,7 +528,7 @@ mod tests {
             "Nor should this body wrap.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq);
+        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq, &Colors::default());
         assert_eq!(out, e.to_text());
     }
 
@@ -339,7 +540,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@", TagSort::Freq);
+        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@", TagSort::Freq, &Colors::default());
         assert_eq!(out, e.to_short());
     }
 
@@ -351,11 +552,11 @@ mod tests {
 
         // With wrapping enabled (the bug: wrap_text strips trailing
         // newlines via .lines(), which collapsed the blank line).
-        let out = format_entries(&refs, None, false, 40, "#@", TagSort::Freq);
+        let out = format_entries(&refs, None, false, 40, "#@", TagSort::Freq, &Colors::default());
         assert!(out.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out);
 
         // And with wrapping disabled.
-        let out_nowrap = format_entries(&refs, None, false, 0, "#@", TagSort::Freq);
+        let out_nowrap = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default());
         assert!(out_nowrap.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
     }
 
