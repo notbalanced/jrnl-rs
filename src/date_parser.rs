@@ -13,6 +13,38 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 ///    "yesterday at 9:15am", "friday at 6pm", "2026-05-23 at 17:30"
 ///  - a bare time-of-day on its own ("10am") -> today at that time
 /// Returns the start-of-day NaiveDateTime if no time component is given.
+/// Parse a date/time expression, applying `default_hour`/`default_minute`
+/// when the input has a date but no explicit time component.
+///
+/// Used for entry creation only — search filters use `parse_date` directly
+/// (which defaults to midnight) so that date-range boundaries are inclusive.
+pub fn parse_date_with_defaults(
+    input: &str,
+    default_hour: u32,
+    default_minute: u32,
+) -> Option<NaiveDateTime> {
+    let s = input.trim().to_lowercase();
+    let s = s.replace(" at ", " ");
+    let s = s.trim();
+    let now = Local::now().naive_local();
+
+    let (date_part, time_part) = split_trailing_time(s);
+
+    if date_part.is_empty() {
+        // Bare time with no date → today at that time (no defaulting needed).
+        return time_part.map(|t| now.date().and_time(t));
+    }
+
+    let base_date = parse_date_part(date_part, now)?;
+    match time_part {
+        // User supplied an explicit time — use it as-is.
+        Some(t) => Some(base_date.and_time(t)),
+        // No time supplied — use the configured defaults instead of midnight.
+        None => NaiveTime::from_hms_opt(default_hour, default_minute, 0)
+            .map(|t| base_date.and_time(t)),
+    }
+}
+
 pub fn parse_date(input: &str) -> Option<NaiveDateTime> {
     let s = input.trim().to_lowercase();
     // "at" is just a connector word between a date and a time
@@ -170,13 +202,37 @@ fn most_recent_weekday(from: NaiveDate, target: Weekday) -> NaiveDate {
     }
 }
 
-/// Given an entry text like "yesterday: Did some stuff." or
+/// Like `split_date_prefix` but uses `default_hour`/`default_minute` when
+/// the date expression has no explicit time component. Used for entry creation.
+pub fn split_date_prefix_with_defaults(
+    text: &str,
+    default_hour: u32,
+    default_minute: u32,
+) -> (Option<NaiveDateTime>, &str) {
+    let mut best: Option<(NaiveDateTime, &str)> = None;
+
+    for (idx, _) in text.match_indices(':') {
+        let candidate = &text[..idx];
+        if let Some(date) = parse_date_with_defaults(candidate, default_hour, default_minute) {
+            let rest = text[idx + 1..].trim_start();
+            best = Some((date, rest));
+        }
+    }
+
+    match best {
+        Some((date, rest)) => (Some(date), rest),
+        None => (None, text),
+    }
+}
+
+
 /// "6/6/2026 10:00: Older entry.", split off a leading date expression
 /// (followed by ':') if present. Returns (Option<date>, remaining_text).
 ///
 /// Since date expressions can themselves contain colons (e.g. "10:00"),
 /// every ':' position is tried as a possible split point, and the longest
 /// (rightmost) candidate that parses as a valid date wins.
+#[allow(dead_code)]
 pub fn split_date_prefix(text: &str) -> (Option<NaiveDateTime>, &str) {
     let mut best: Option<(NaiveDateTime, &str)> = None;
 
@@ -402,5 +458,88 @@ mod tests {
             assert!(date.is_some(), "failed to parse date for input: {}", input);
             assert_eq!(rest, expected_rest, "wrong remainder for input: {}", input);
         }
+    }
+
+    // ---------- parse_date_with_defaults ----------
+
+    #[test]
+    fn test_defaults_applied_when_no_time_in_prefix() {
+        let d = parse_date_with_defaults("2026-06-24", 9, 0).unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 6, 24).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            "default time should be 09:00");
+    }
+
+    #[test]
+    fn test_defaults_not_applied_when_explicit_time_given() {
+        let d = parse_date_with_defaults("2026-06-24 11pm", 9, 0).unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            "explicit time should override default");
+    }
+
+    #[test]
+    fn test_defaults_applied_to_relative_date() {
+        let yesterday = Local::now().naive_local().date() - chrono::Duration::days(1);
+        let d = parse_date_with_defaults("yesterday", 9, 30).unwrap();
+        assert_eq!(d.date(), yesterday);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+    }
+
+    #[test]
+    fn test_defaults_applied_to_weekday() {
+        // "monday" with default 14:00 should give 14:00, not midnight.
+        let d = parse_date_with_defaults("monday", 14, 0).unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(14, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_explicit_time_overrides_default_am_pm() {
+        let d = parse_date_with_defaults("yesterday at 11pm", 9, 0).unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            "explicit 11pm should not be replaced by default 9am");
+    }
+
+    #[test]
+    fn test_explicit_hhmm_overrides_default() {
+        let d = parse_date_with_defaults("2026-06-24 09:30", 9, 0).unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+    }
+
+    // ---------- split_date_prefix_with_defaults ----------
+
+    #[test]
+    fn test_split_date_prefix_with_defaults_no_time() {
+        let (date, rest) = split_date_prefix_with_defaults("yesterday: I went to the store.", 9, 0);
+        let d = date.unwrap();
+        let yesterday = Local::now().naive_local().date() - chrono::Duration::days(1);
+        assert_eq!(d.date(), yesterday);
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            "should use default 09:00 when no time in prefix");
+        assert_eq!(rest, "I went to the store.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_with_defaults_explicit_time_wins() {
+        let (date, rest) = split_date_prefix_with_defaults("yesterday at 11pm: I went to the store.", 9, 0);
+        let d = date.unwrap();
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            "explicit 11pm should override default 9am");
+        assert_eq!(rest, "I went to the store.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_with_defaults_no_prefix_returns_none() {
+        let (date, rest) = split_date_prefix_with_defaults("Just a plain entry.", 9, 0);
+        assert!(date.is_none(), "no date prefix should return None");
+        assert_eq!(rest, "Just a plain entry.");
+    }
+
+    #[test]
+    fn test_split_date_prefix_with_defaults_iso_date_no_time() {
+        let (date, rest) = split_date_prefix_with_defaults("2026-06-24: Entry text.", 9, 0);
+        let d = date.unwrap();
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 6, 24).unwrap());
+        assert_eq!(d.time(), NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        assert_eq!(rest, "Entry text.");
     }
 }

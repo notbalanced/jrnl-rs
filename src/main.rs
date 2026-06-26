@@ -97,7 +97,7 @@ fn run() -> Result<()> {
     if cli.is_search_mode() {
         cmd_search(&cli, &config, &journal)
     } else if !text_args.is_empty() {
-        cmd_add(&cli, &journal, &text_args.join(" "))
+        cmd_add(&cli, &journal, &text_args.join(" "), config.default_hour, config.default_minute)
     } else {
         // No text and no search flags: prompt for input on stdin.
         cmd_compose(&config, &journal)
@@ -148,6 +148,24 @@ fn cmd_list_journals(config: &Config, config_found: bool, config_path: &std::pat
         println!("  • {:<12} {}  [{}]{}", name, jcfg.path.display(), mode, exists_marker);
     }
 
+    println!();
+    println!("Settings:");
+    println!("  editor          : {}", config.editor.as_deref().unwrap_or("(from $EDITOR/$VISUAL)"));
+    println!("  default time    : {:02}:{:02}", config.default_hour, config.default_minute);
+    println!("  timeformat      : {}", config.timeformat);
+    println!("  linewrap        : {}", if config.linewrap == 0 { "off".to_string() } else { config.linewrap.to_string() });
+    println!("  indent_character: {}", config.indent_character);
+    println!("  tagsymbols      : {}", config.tagsymbols);
+
+    let colors = &config.colors;
+    let any_color = colors.any_enabled();
+    if any_color {
+        println!("  colors          : date={} title={} body={} tags={} contains={}",
+            colors.date, colors.title, colors.body, colors.tags, colors.search);
+    } else {
+        println!("  colors          : none");
+    }
+
     Ok(())
 }
 
@@ -165,6 +183,14 @@ fn cmd_init(config_file: Option<&str>) -> Result<()> {
             println!();
             println!("Folder journals:  use a path with a trailing /  (or no file extension)");
             println!("File journals:    use a path ending in .txt (or any file extension)");
+            println!();
+            println!("Other settings you can configure:");
+            println!("  default_hour: 9       # default time for entries without a time (0-23)");
+            println!("  default_minute: 0     # default minute (0-59)");
+            println!("  linewrap: 79          # line width for display (0 = off)");
+            println!("  indent_character: '|' # prefix for body lines in default output");
+            println!("  tagsymbols: '#@'      # characters that mark a word as a tag");
+            println!("  editor: nvim          # editor to open (default: $EDITOR/$VISUAL)");
             Ok(())
         }
         Err(e) => Err(e),
@@ -176,8 +202,10 @@ fn cmd_init(config_file: Option<&str>) -> Result<()> {
 /// leading date/time expression (e.g. "yesterday 10pm:", "6/1/2026 10am:"),
 /// an optional leading "*" for starred entries, and splits the remainder
 /// into title (up to and including the first '.', '?', or '!') and body.
-fn parse_free_text_entry(text: &str) -> Entry {
-    let (date, rest) = date_parser::split_date_prefix(text);
+fn parse_free_text_entry(text: &str, default_hour: u32, default_minute: u32) -> Entry {
+    let (date, rest) = date_parser::split_date_prefix_with_defaults(text, default_hour, default_minute);
+    // If no date prefix at all, use the current time (not the configured default,
+    // since "no prefix" means "right now", not "today at 9am").
     let date = date.unwrap_or_else(|| Local::now().naive_local());
 
     let (starred, rest) = match rest.strip_prefix('*') {
@@ -191,9 +219,9 @@ fn parse_free_text_entry(text: &str) -> Entry {
 
 /// Add a new entry. Splits an optional date prefix (e.g. "yesterday: text")
 /// and a leading "*" for starred entries.
-fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
+fn cmd_add(cli: &Cli, journal: &Journal, text: &str, default_hour: u32, default_minute: u32) -> Result<()> {
     let entry = if let Some(template_path) = &cli.template {
-        let (date, rest) = date_parser::split_date_prefix(text);
+        let (date, rest) = date_parser::split_date_prefix_with_defaults(text, default_hour, default_minute);
         let date = date.unwrap_or_else(|| Local::now().naive_local());
         let (starred, rest) = match rest.strip_prefix('*') {
             Some(r) => (true, r),
@@ -202,7 +230,7 @@ fn cmd_add(cli: &Cli, journal: &Journal, text: &str) -> Result<()> {
         let (title, body) = split_title_body(rest);
         apply_template(template_path, date, starred, &title, &body)?
     } else {
-        parse_free_text_entry(text)
+        parse_free_text_entry(text, default_hour, default_minute)
     };
 
     journal.add_entry(&entry)?;
@@ -311,7 +339,7 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
             return Ok(());
         }
 
-        let entry = parse_free_text_entry(raw.trim());
+        let entry = parse_free_text_entry(raw.trim(), config.default_hour, config.default_minute);
         journal.add_entry(&entry)?;
         println!("Entry added to journal.");
         return Ok(());
@@ -326,7 +354,7 @@ fn cmd_compose(config: &Config, journal: &Journal) -> Result<()> {
         println!("No input given, nothing saved.");
         return Ok(());
     }
-    let entry = parse_free_text_entry(buf.trim());
+    let entry = parse_free_text_entry(buf.trim(), config.default_hour, config.default_minute);
     journal.add_entry(&entry)?;
     println!("Entry added to journal.");
     Ok(())
@@ -702,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_parse_free_text_entry_with_us_date_and_am_pm() {
-        let entry = parse_free_text_entry("6/1/2026 10am: Test entry.\nOlder entry.");
+        let entry = parse_free_text_entry("6/1/2026 10am: Test entry.\nOlder entry.", 9, 0);
         assert_eq!(entry.date.date(), chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap());
         assert_eq!(entry.date.time(), chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap());
         assert_eq!(entry.title, "Test entry.");
@@ -710,15 +738,51 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_free_text_entry_date_prefix_no_time_uses_default() {
+        // "yesterday: text" with default 9:00 → yesterday at 09:00, not midnight.
+        let entry = parse_free_text_entry("yesterday: I went to the store.", 9, 0);
+        let yesterday = chrono::Local::now().naive_local().date() - chrono::Duration::days(1);
+        assert_eq!(entry.date.date(), yesterday);
+        assert_eq!(
+            entry.date.time(),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            "should use default 09:00, not midnight"
+        );
+        assert_eq!(entry.title, "I went to the store.");
+    }
+
+    #[test]
+    fn test_parse_free_text_entry_explicit_time_overrides_default() {
+        // "yesterday at 11pm: text" → should use 23:00, not the default 9:00.
+        let entry = parse_free_text_entry("yesterday at 11pm: I went to the store.", 9, 0);
+        assert_eq!(
+            entry.date.time(),
+            chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            "explicit 11pm should override default 9am"
+        );
+    }
+
+    #[test]
+    fn test_parse_free_text_entry_custom_defaults() {
+        // Verify non-standard defaults (14:30) are applied correctly.
+        let entry = parse_free_text_entry("2026-06-24: Afternoon entry.", 14, 30);
+        assert_eq!(entry.date.date(), chrono::NaiveDate::from_ymd_opt(2026, 6, 24).unwrap());
+        assert_eq!(
+            entry.date.time(),
+            chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap()
+        );
+    }
+
+    #[test]
     fn test_parse_free_text_entry_no_date_prefix() {
-        let entry = parse_free_text_entry("Just a note. With a body.");
+        let entry = parse_free_text_entry("Just a note. With a body.", 9, 0);
         assert_eq!(entry.title, "Just a note.");
         assert_eq!(entry.body, "With a body.");
     }
 
     #[test]
     fn test_parse_free_text_entry_starred() {
-        let entry = parse_free_text_entry("yesterday: *Big news! Got it.");
+        let entry = parse_free_text_entry("yesterday: *Big news! Got it.", 9, 0);
         assert!(entry.starred);
         assert_eq!(entry.title, "Big news!");
     }

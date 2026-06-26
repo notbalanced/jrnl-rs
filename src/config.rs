@@ -139,6 +139,12 @@ pub struct Config {
     /// Character(s) prepended to each body line in pretty/default output.
     #[serde(default = "default_indent_character")]
     pub indent_character: String,
+    /// Default hour (0–23) used when adding an entry without an explicit time.
+    #[serde(default = "default_hour")]
+    pub default_hour: u32,
+    /// Default minute (0–59) used when adding an entry without an explicit time.
+    #[serde(default = "default_minute")]
+    pub default_minute: u32,
     /// Optional colors for pretty output.
     #[serde(default)]
     pub colors: Colors,
@@ -148,6 +154,8 @@ fn default_timeformat() -> String { "%Y-%m-%d %H:%M".to_string() }
 fn default_linewrap() -> usize { 79 }
 fn default_indent_character() -> String { "|".to_string() }
 fn default_tagsymbols() -> String { DEFAULT_TAG_SYMBOLS.to_string() }
+fn default_hour() -> u32 { 9 }
+fn default_minute() -> u32 { 0 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -161,6 +169,8 @@ impl Default for Config {
             timeformat: default_timeformat(),
             linewrap: default_linewrap(),
             indent_character: default_indent_character(),
+            default_hour: default_hour(),
+            default_minute: default_minute(),
             colors: Colors::default(),
         }
     }
@@ -242,6 +252,18 @@ impl Config {
             "timeformat" => self.timeformat = value.to_string(),
             "tagsymbols" => self.tagsymbols = value.to_string(),
             "indent_character" | "indent-character" => self.indent_character = value.to_string(),
+            "default_hour" | "default-hour" => {
+                let h: u32 = value.parse()
+                    .map_err(|_| anyhow!("Invalid default_hour '{}' (expected 0–23)", value))?;
+                if h > 23 { return Err(anyhow!("default_hour must be 0–23, got {}", h)); }
+                self.default_hour = h;
+            }
+            "default_minute" | "default-minute" => {
+                let m: u32 = value.parse()
+                    .map_err(|_| anyhow!("Invalid default_minute '{}' (expected 0–59)", value))?;
+                if m > 59 { return Err(anyhow!("default_minute must be 0–59, got {}", m)); }
+                self.default_minute = m;
+            }
             "linewrap" => {
                 self.linewrap = value
                     .parse::<usize>()
@@ -444,5 +466,68 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: Config = serde_yaml::from_str(&yaml).unwrap();
         assert!(parsed.journals.contains_key("default"));
+    }
+
+    #[test]
+    fn test_default_hour_and_minute_defaults() {
+        let config = Config::default();
+        assert_eq!(config.default_hour, 9);
+        assert_eq!(config.default_minute, 0);
+    }
+
+    #[test]
+    fn test_apply_override_default_hour() {
+        let mut config = Config::default();
+        config.apply_override("default_hour", "14").unwrap();
+        assert_eq!(config.default_hour, 14);
+    }
+
+    #[test]
+    fn test_apply_override_default_minute() {
+        let mut config = Config::default();
+        config.apply_override("default_minute", "30").unwrap();
+        assert_eq!(config.default_minute, 30);
+    }
+
+    #[test]
+    fn test_apply_override_default_hour_alias() {
+        // Both underscore and hyphen forms should work.
+        let mut config = Config::default();
+        config.apply_override("default-hour", "8").unwrap();
+        assert_eq!(config.default_hour, 8);
+    }
+
+    #[test]
+    fn test_apply_override_default_hour_out_of_range() {
+        let mut config = Config::default();
+        assert!(config.apply_override("default_hour", "24").is_err());
+        assert!(config.apply_override("default_minute", "60").is_err());
+    }
+
+    #[test]
+    fn test_apply_override_default_hour_invalid() {
+        let mut config = Config::default();
+        assert!(config.apply_override("default_hour", "noon").is_err());
+    }
+
+    #[test]
+    fn test_old_config_without_default_time_uses_defaults() {
+        // Older config files that don't have default_hour/default_minute
+        // should fall back to 9:00 via serde defaults.
+        let yaml = "journals:\n  default: /tmp/journal.txt\n";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.default_hour, 9);
+        assert_eq!(config.default_minute, 0);
+    }
+
+    #[test]
+    fn test_yaml_roundtrip_preserves_default_time() {
+        let mut config = Config::default();
+        config.default_hour = 7;
+        config.default_minute = 45;
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.default_hour, 7);
+        assert_eq!(parsed.default_minute, 45);
     }
 }
