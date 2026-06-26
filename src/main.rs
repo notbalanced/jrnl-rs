@@ -412,6 +412,7 @@ fn cmd_search(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
         cli.sort,
         &config.colors,
         cli.contains.as_deref(),
+        &config.indent_character,
     );
 
     if let Some(file_path) = &cli.file {
@@ -465,11 +466,18 @@ fn cmd_last(cli: &Cli, config: &Config, journal: &Journal) -> Result<()> {
             println!("Last entry no longer found (it may have been edited or deleted).");
         }
         Some(e) => {
-            let out = if cli.short {
-                e.to_short()
-            } else {
-                formatter::wrap_text(e.to_text().trim_end(), config.linewrap)
-            };
+            let refs = vec![e];
+            let out = formatter::format_entries(
+                &refs,
+                cli.format,
+                cli.short,
+                config.linewrap,
+                &config.tagsymbols,
+                cli.sort,
+                &config.colors,
+                None,
+                &config.indent_character,
+            );
             println!("{}", out);
         }
     }

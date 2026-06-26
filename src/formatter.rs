@@ -27,6 +27,7 @@ pub fn format_entries(
     tag_sort: TagSort,
     colors: &Colors,
     highlight: Option<&str>,
+    indent_character: &str,
 ) -> String {
     let use_color = matches!(format, Some(FormatType::Pretty))
         || (format.is_none() && colors.any_enabled());
@@ -45,19 +46,15 @@ pub fn format_entries(
     match format {
         None => {
             if use_color {
-                format_pretty_entries(entries, colors, tag_symbols, linewrap, highlight)
+                format_pretty_entries(entries, colors, tag_symbols, linewrap, highlight, indent_character)
             } else {
-                entries
-                    .iter()
-                    .map(|e| wrap_text(e.to_text().trim_end(), linewrap))
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
+                format_plain_entries(entries, linewrap, indent_character)
             }
         }
         Some(FormatType::Text) | Some(FormatType::Txt) => {
             entries.iter().map(|e| e.to_text()).collect::<Vec<_>>().join("\n")
         }
-        Some(FormatType::Pretty) => format_pretty_entries(entries, colors, tag_symbols, linewrap, highlight),
+        Some(FormatType::Pretty) => format_pretty_entries(entries, colors, tag_symbols, linewrap, highlight, indent_character),
         Some(FormatType::Short) => entries.iter().map(|e| e.to_short()).collect::<Vec<_>>().join("\n"),
         Some(FormatType::Dates) => entries
             .iter()
@@ -70,16 +67,54 @@ pub fn format_entries(
     }
 }
 
+/// Plain (no color) entry rendering with indent_character on body lines.
+fn format_plain_entries(entries: &[&Entry], linewrap: usize, indent_character: &str) -> String {
+    entries
+        .iter()
+        .map(|e| format_plain_entry(e, linewrap, indent_character))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn format_plain_entry(entry: &Entry, linewrap: usize, indent_character: &str) -> String {
+    let date_text = entry.date.format("%Y-%m-%d %H:%M").to_string();
+    let star = if entry.starred { "*" } else { "" };
+    let header = format!("{} {}{}", date_text, star, entry.title.trim());
+    let header = if linewrap == 0 { header } else { wrap_text(&header, linewrap) };
+
+    if entry.body.trim().is_empty() {
+        return header;
+    }
+
+    let body = if linewrap == 0 {
+        entry.body.trim().to_string()
+    } else {
+        // Wrap to (linewrap - prefix_len) so the prefixed lines stay within linewrap.
+        let prefix = format!("{} ", indent_character);
+        let prefix_len = prefix.chars().count();
+        let wrap_width = if linewrap > prefix_len { linewrap - prefix_len } else { linewrap };
+        wrap_text(entry.body.trim(), wrap_width)
+    };
+
+    let indented_body = body.lines()
+        .map(|line| format!("{} {}", indent_character, line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{}\n{}", header, indented_body)
+}
+
 fn format_pretty_entries(
     entries: &[&Entry],
     colors: &Colors,
     tag_symbols: &str,
     linewrap: usize,
     highlight: Option<&str>,
+    indent_character: &str,
 ) -> String {
     entries
         .iter()
-        .map(|e| format_pretty_entry(e, colors, tag_symbols, linewrap, highlight))
+        .map(|e| format_pretty_entry(e, colors, tag_symbols, linewrap, highlight, indent_character))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -90,8 +125,10 @@ fn format_pretty_entry(
     tag_symbols: &str,
     linewrap: usize,
     highlight: Option<&str>,
+    indent_character: &str,
 ) -> String {
-    let date_text = format!("[{}]", entry.date.format("%Y-%m-%d %H:%M"));
+    // Date without brackets, matching the requested output format.
+    let date_text = entry.date.format("%Y-%m-%d %H:%M").to_string();
     let title_text = highlight_contains(entry.title.trim(), highlight);
     let header_text = if entry.starred {
         format!("{} *{}", date_text, title_text)
@@ -119,10 +156,10 @@ fn format_pretty_entry(
                     let title_text = apply_tag_colors(after_date, tag_symbols, &colors.tags, Some(&colors.title));
                     colored.push_str(&apply_color(&title_text, &colors.title));
                 }
-                replace_highlight_placeholders(&colored, &colors.contains, Some(&colors.title))
+                replace_highlight_placeholders(&colored, &colors.search, Some(&colors.title))
             } else {
                 let title_line = apply_tag_colors(line, tag_symbols, &colors.tags, Some(&colors.title));
-                replace_highlight_placeholders(&apply_color(&title_line, &colors.title), &colors.contains, Some(&colors.title))
+                replace_highlight_placeholders(&apply_color(&title_line, &colors.title), &colors.search, Some(&colors.title))
             }
         })
         .collect::<Vec<_>>()
@@ -130,17 +167,28 @@ fn format_pretty_entry(
 
     let mut out = header;
     if !entry.body.trim().is_empty() {
+        // Wrap body to (linewrap - prefix_len) so prefixed lines stay within linewrap.
+        let prefix = format!("{} ", indent_character);
+        let prefix_len = prefix.chars().count();
         let body_input = highlight_contains(entry.body.trim(), highlight);
-        let body = if linewrap == 0 {
+        let body_wrapped = if linewrap == 0 {
             body_input
         } else {
-            wrap_text(&body_input, linewrap)
+            let wrap_width = if linewrap > prefix_len { linewrap - prefix_len } else { linewrap };
+            wrap_text(&body_input, wrap_width)
         };
-        let body = apply_tag_colors(&body, tag_symbols, &colors.tags, Some(&colors.body));
-        let body = apply_color(&body, &colors.body);
-        let body = replace_highlight_placeholders(&body, &colors.contains, Some(&colors.body));
+
+        // Prepend indent_character to each body line, then apply colors.
+        let indented = body_wrapped.lines()
+            .map(|line| format!("{} {}", indent_character, line))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let indented = apply_tag_colors(&indented, tag_symbols, &colors.tags, Some(&colors.body));
+        let indented = apply_color(&indented, &colors.body);
+        let indented = replace_highlight_placeholders(&indented, &colors.search, Some(&colors.body));
         out.push('\n');
-        out.push_str(&body);
+        out.push_str(&indented);
     }
     out
 }
@@ -150,7 +198,7 @@ fn format_entry_short(entry: &Entry, colors: &Colors, tag_symbols: &str, highlig
     let title_input = highlight_contains(&entry.title, highlight);
     let title = apply_tag_colors(&title_input, tag_symbols, &colors.tags, Some(&colors.title));
     let title = apply_color(&title, &colors.title);
-    let title = replace_highlight_placeholders(&title, &colors.contains, Some(&colors.title));
+    let title = replace_highlight_placeholders(&title, &colors.search, Some(&colors.title));
     format!("{} {}{}", date, if entry.starred { "*" } else { "" }, title)
 }
 
@@ -430,18 +478,19 @@ mod tests {
 
     #[test]
     fn test_text_format() {
+        // format: None with no colors → format_plain_entry (no brackets, indent on body)
         let e = entry("2024-01-15 09:30", "Hello.", "World");
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None);
-        assert!(out.contains("[2024-01-15 09:30] Hello."));
-        assert!(out.contains("World"));
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(out.contains("2024-01-15 09:30 Hello."), "date+title without brackets: {:?}", out);
+        assert!(out.contains("| World"), "body should be indented: {:?}", out);
     }
 
     #[test]
     fn test_json_format() {
         let e = entry("2024-01-15 09:30", "Hello @world.", "Body");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Json), false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
         assert!(out.contains("\"title\""));
         assert!(out.contains("@world"));
     }
@@ -451,7 +500,7 @@ mod tests {
         let e1 = entry("2024-01-15 09:30", "Met @bob.", "");
         let e2 = entry("2024-01-16 09:30", "Met @bob and @alice.", "");
         let refs = vec![&e1, &e2];
-        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Tags), false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
         assert!(out.starts_with("3 tags found"), "got: {:?}", out);
         assert!(out.contains("@bob"));
         assert!(out.contains("@alice"));
@@ -462,7 +511,7 @@ mod tests {
     fn test_short_flag_overrides_format() {
         let e = entry("2024-01-15 09:30", "Hello.", "World body text");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Json), true, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
         assert!(!out.contains("World"));
         assert!(out.contains("Hello."));
     }
@@ -500,7 +549,7 @@ mod tests {
             "And a body with several words that also needs wrapping in pretty mode.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
         for line in out.lines() {
             assert!(line.chars().count() <= 20, "line too long: {:?}", line);
         }
@@ -521,7 +570,7 @@ mod tests {
             "And a body with several words that also needs wrapping in pretty mode.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &colors, None);
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 20, "#@", TagSort::Freq, &colors, None, "|");
         for line in strip_ansi_codes(&out).lines() {
             assert!(line.chars().count() <= 20, "colored line too long: {:?}", line);
         }
@@ -538,7 +587,7 @@ mod tests {
         };
         let e = entry("2024-01-15 09:30", "Shoes were found.", "The shoes are red.");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, Some("shoes"));
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, Some("shoes"), "|");
         assert!(out.contains("\x1b[31mShoes\x1b[0m") || out.contains("\x1b[31mshoes\x1b[0m"));
     }
 
@@ -553,7 +602,7 @@ mod tests {
         };
         let e = entry("2024-01-15 09:30", "#run fast", "");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, Some("#run"));
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, Some("#run"), "|");
         assert!(out.contains("\x1b[31m#run\x1b[0m"));
     }
 
@@ -568,7 +617,7 @@ mod tests {
         };
         let e = entry("2024-01-15 09:30", "#run fast", "");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None, "|");
         // Tag colored yellow, rest of title colored magenta, restore back to magenta after tag.
         assert!(out.contains("\x1b[33m#run\x1b[0m\x1b[35m"), "expected tag colored, then magenta restored: {:?}", out);
         assert!(out.contains("fast"), "should contain non-tag word: {:?}", out);
@@ -585,7 +634,7 @@ mod tests {
         };
         let e = entry("2024-01-15 09:30", "Title", "Body with #run tag.");
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None, "|");
         // #run should be yellow; text before and after should be green.
         assert!(out.contains("\x1b[33m#run\x1b[0m\x1b[32m"), "expected tag yellow then green restore: {:?}", out);
         assert!(out.contains("\x1b[32m"), "expected body color green: {:?}", out);
@@ -625,9 +674,11 @@ mod tests {
             "And a body with several words that also needs wrapping.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        // The indent prefix "| " (2 chars) is part of each body line — the total
+        // line length including the prefix must stay within linewrap.
         for line in out.lines() {
-            assert!(line.chars().count() <= 20, "line too long: {:?}", line);
+            assert!(line.chars().count() <= 20, "line too long ({} chars): {:?}", line.chars().count(), line);
         }
     }
 
@@ -639,9 +690,9 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None);
-        // With linewrap=0, the whole header line stays on one line.
-        assert_eq!(out.lines().next().unwrap(), "[2024-01-15 09:30] A reasonably long title that would wrap if linewrap were set.");
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        // With linewrap=0 and no colors, the header stays on one line (no brackets in plain format).
+        assert_eq!(out.lines().next().unwrap(), "2024-01-15 09:30 A reasonably long title that would wrap if linewrap were set.");
     }
 
     #[test]
@@ -652,7 +703,7 @@ mod tests {
             "Body is ignored in short format.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, None, true, 20, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, None, true, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
         // --short is never wrapped, regardless of linewrap.
         assert_eq!(out, e.to_short());
     }
@@ -665,7 +716,7 @@ mod tests {
             "Nor should this body wrap.",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
         assert_eq!(out, e.to_text());
     }
 
@@ -677,7 +728,7 @@ mod tests {
             "",
         );
         let refs = vec![&e];
-        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@", TagSort::Freq, &Colors::default(), None);
+        let out = format_entries(&refs, Some(FormatType::Short), false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
         assert_eq!(out, e.to_short());
     }
 
@@ -689,12 +740,100 @@ mod tests {
 
         // With wrapping enabled (the bug: wrap_text strips trailing
         // newlines via .lines(), which collapsed the blank line).
-        let out = format_entries(&refs, None, false, 40, "#@", TagSort::Freq, &Colors::default(), None);
-        assert!(out.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out);
+        let out = format_entries(&refs, None, false, 40, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(out.contains("First entry.\n\n2024-01-16"), "expected blank line between entries, got: {:?}", out);
 
         // And with wrapping disabled.
-        let out_nowrap = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None);
-        assert!(out_nowrap.contains("First entry.\n\n[2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
+        let out_nowrap = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(out_nowrap.contains("First entry.\n\n2024-01-16"), "expected blank line between entries, got: {:?}", out_nowrap);
+    }
+
+    // ---------- indent_character ----------
+
+    #[test]
+    fn test_plain_format_body_gets_indent_prefix() {
+        let e = entry("2024-01-15 09:30", "Title.", "Body line one.");
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(out.contains("| Body line one."), "body should be prefixed with '| ': {:?}", out);
+    }
+
+    #[test]
+    fn test_plain_format_date_has_no_brackets() {
+        let e = entry("2024-01-15 09:30", "Title.", "");
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(out.starts_with("2024-01-15 09:30"), "date should not have brackets: {:?}", out);
+        assert!(!out.contains('['), "should not contain brackets: {:?}", out);
+    }
+
+    #[test]
+    fn test_pretty_format_body_gets_indent_prefix() {
+        let e = entry("2024-01-15 09:30", "Title.", "Body line one.");
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        let stripped = strip_ansi_codes(&out);
+        assert!(stripped.contains("| Body line one."), "body should be prefixed with '| ': {:?}", stripped);
+    }
+
+    #[test]
+    fn test_pretty_format_date_has_no_brackets() {
+        let e = entry("2024-01-15 09:30", "Title.", "");
+        let refs = vec![&e];
+        let out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        let stripped = strip_ansi_codes(&out);
+        assert!(stripped.starts_with("2024-01-15 09:30"), "date should not have brackets: {:?}", stripped);
+    }
+
+    #[test]
+    fn test_custom_indent_character() {
+        let e = entry("2024-01-15 09:30", "Title.", "Body text.");
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, ">");
+        assert!(out.contains("> Body text."), "custom indent char '>': {:?}", out);
+        assert!(!out.contains("| Body text."), "should not have default '|': {:?}", out);
+    }
+
+    #[test]
+    fn test_format_text_has_no_indent_and_keeps_brackets() {
+        // --format text / --format txt = raw jrnl format, no indent, no changes.
+        let e = entry("2024-01-15 09:30", "Title.", "Body text.");
+        let refs = vec![&e];
+        let out_text = format_entries(&refs, Some(FormatType::Text), false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        let out_txt  = format_entries(&refs, Some(FormatType::Txt),  false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        // Should match to_text() exactly — brackets, no indent, no wrapping.
+        assert_eq!(out_text, e.to_text(), "--format text should equal to_text()");
+        assert_eq!(out_txt,  e.to_text(), "--format txt should equal to_text()");
+        assert!(!out_text.contains('|'), "--format text should not have indent prefix");
+        assert!(out_text.contains('['),  "--format text should keep date brackets");
+    }
+
+    #[test]
+    fn test_indent_wraps_correctly_within_linewrap() {
+        // With linewrap=20 and "|" prefix (2 chars), the body content should
+        // wrap at 18 chars so that "| " + content = 20 chars total.
+        let body = "word1 word2 word3 word4 word5 word6 word7";
+        let e = entry("2024-01-15 09:30", "T.", body);
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 20, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        for line in out.lines() {
+            if line.starts_with("| ") {
+                assert!(
+                    line.chars().count() <= 20,
+                    "indented body line exceeds linewrap ({} chars): {:?}",
+                    line.chars().count(), line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_no_body_no_indent_line() {
+        // Entries with no body should produce no indent line at all.
+        let e = entry("2024-01-15 09:30", "Title only.", "");
+        let refs = vec![&e];
+        let out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        assert!(!out.contains('|'), "no body = no indent line: {:?}", out);
     }
 
     #[test]
@@ -816,8 +955,8 @@ mod tests {
         let colors = Colors { date: "cyan".to_string(), ..Colors::default() };
         let e = entry("2024-01-15 09:30", "Hello.", "");
         let refs = vec![&e];
-        let plain = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None);
-        let colored = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None);
+        let plain = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &Colors::default(), None, "|");
+        let colored = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None, "|");
         // Plain output has no ANSI; colored output should have cyan for date.
         assert!(!plain.contains("\x1b["), "plain output should have no ANSI codes");
         assert!(colored.contains("\x1b[36m"), "colored output should contain cyan ANSI code");
@@ -828,8 +967,8 @@ mod tests {
         let colors = Colors { date: "cyan".to_string(), title: "magenta".to_string(), ..Colors::default() };
         let e = entry("2024-01-15 09:30", "Hello.", "Body text.");
         let refs = vec![&e];
-        let default_out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None);
-        let pretty_out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None);
+        let default_out = format_entries(&refs, None, false, 0, "#@", TagSort::Freq, &colors, None, "|");
+        let pretty_out = format_entries(&refs, Some(FormatType::Pretty), false, 0, "#@", TagSort::Freq, &colors, None, "|");
         assert_eq!(default_out, pretty_out, "default format and --format pretty should be identical when colors are active");
     }
 

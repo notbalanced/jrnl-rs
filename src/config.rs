@@ -91,7 +91,7 @@ pub struct Colors {
     #[serde(default = "default_color")]
     pub title: String,
     #[serde(default = "default_color")]
-    pub contains: String,
+    pub search: String,
 }
 
 fn default_color() -> String {
@@ -105,7 +105,7 @@ impl Default for Colors {
             date: default_color(),
             tags: default_color(),
             title: default_color(),
-            contains: default_color(),
+            search: default_color(),
         }
     }
 }
@@ -116,7 +116,7 @@ impl Colors {
             || !self.date.eq_ignore_ascii_case("none")
             || !self.tags.eq_ignore_ascii_case("none")
             || !self.title.eq_ignore_ascii_case("none")
-            || !self.contains.eq_ignore_ascii_case("none")
+            || !self.search.eq_ignore_ascii_case("none")
     }
 }
 
@@ -136,6 +136,9 @@ pub struct Config {
     /// Maximum line width for displayed entries. 0 disables wrapping.
     #[serde(default = "default_linewrap")]
     pub linewrap: usize,
+    /// Character(s) prepended to each body line in pretty/default output.
+    #[serde(default = "default_indent_character")]
+    pub indent_character: String,
     /// Optional colors for pretty output.
     #[serde(default)]
     pub colors: Colors,
@@ -143,6 +146,7 @@ pub struct Config {
 
 fn default_timeformat() -> String { "%Y-%m-%d %H:%M".to_string() }
 fn default_linewrap() -> usize { 79 }
+fn default_indent_character() -> String { "|".to_string() }
 fn default_tagsymbols() -> String { DEFAULT_TAG_SYMBOLS.to_string() }
 
 impl Default for Config {
@@ -156,6 +160,7 @@ impl Default for Config {
             editor: None,
             timeformat: default_timeformat(),
             linewrap: default_linewrap(),
+            indent_character: default_indent_character(),
             colors: Colors::default(),
         }
     }
@@ -236,6 +241,7 @@ impl Config {
             "editor" => self.editor = Some(value.to_string()),
             "timeformat" => self.timeformat = value.to_string(),
             "tagsymbols" => self.tagsymbols = value.to_string(),
+            "indent_character" | "indent-character" => self.indent_character = value.to_string(),
             "linewrap" => {
                 self.linewrap = value
                     .parse::<usize>()
@@ -248,7 +254,7 @@ impl Config {
                         "date" => self.colors.date = value.to_string(),
                         "tags" => self.colors.tags = value.to_string(),
                         "title" => self.colors.title = value.to_string(),
-                        "contains" => self.colors.contains = value.to_string(),
+                        "search" => self.colors.search = value.to_string(),
                         _ => return Err(anyhow!("Unknown config override key '{}'", key)),
                     }
                 } else if let Some(rest) = other.strip_prefix("journals.") {
