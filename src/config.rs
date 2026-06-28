@@ -530,4 +530,21 @@ mod tests {
         assert_eq!(parsed.default_hour, 7);
         assert_eq!(parsed.default_minute, 45);
     }
+
+    #[test]
+    fn test_colors_serializes_as_search_not_contains() {
+        let mut config = Config::default();
+        config.colors.search = "red".to_string();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("search:"), "YAML should use 'search:' key, got:\n{}", yaml);
+        assert!(!yaml.contains("contains:"), "YAML should not use old 'contains:' key, got:\n{}", yaml);
+    }
+
+    #[test]
+    fn test_apply_override_colors_search() {
+        let mut config = Config::default();
+        config.apply_override("colors.search", "cyan").unwrap();
+        assert_eq!(config.colors.search, "cyan");
+    }
+
 }

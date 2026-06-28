@@ -562,7 +562,7 @@ mod tests {
             date: "cyan".to_string(),
             tags: "yellow".to_string(),
             title: "magenta".to_string(),
-            contains: "none".to_string(),
+            search: "none".to_string(),
         };
         let e = entry(
             "2024-01-15 09:30",
@@ -577,13 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn test_contains_highlight_uses_contains_color() {
+    fn test_contains_highlight_uses_search_color() {
         let colors = Colors {
             body: "none".to_string(),
             date: "none".to_string(),
             tags: "yellow".to_string(),
             title: "none".to_string(),
-            contains: "red".to_string(),
+            search: "red".to_string(),
         };
         let e = entry("2024-01-15 09:30", "Shoes were found.", "The shoes are red.");
         let refs = vec![&e];
@@ -598,7 +598,7 @@ mod tests {
             date: "none".to_string(),
             tags: "yellow".to_string(),
             title: "none".to_string(),
-            contains: "red".to_string(),
+            search: "red".to_string(),
         };
         let e = entry("2024-01-15 09:30", "#run fast", "");
         let refs = vec![&e];
@@ -613,7 +613,7 @@ mod tests {
             date: "none".to_string(),
             tags: "yellow".to_string(),
             title: "magenta".to_string(),
-            contains: "none".to_string(),
+            search: "none".to_string(),
         };
         let e = entry("2024-01-15 09:30", "#run fast", "");
         let refs = vec![&e];
@@ -630,7 +630,7 @@ mod tests {
             date: "none".to_string(),
             tags: "yellow".to_string(),
             title: "none".to_string(),
-            contains: "none".to_string(),
+            search: "none".to_string(),
         };
         let e = entry("2024-01-15 09:30", "Title", "Body with #run tag.");
         let refs = vec![&e];
@@ -941,7 +941,7 @@ mod tests {
         let c = Colors {
             body: "NONE".to_string(), date: "None".to_string(),
             tags: "NoNe".to_string(), title: "none".to_string(),
-            contains: "none".to_string(),
+            search: "none".to_string(),
         };
         assert!(!c.any_enabled());
     }

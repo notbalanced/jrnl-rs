@@ -160,7 +160,7 @@ fn cmd_list_journals(config: &Config, config_found: bool, config_path: &std::pat
     let colors = &config.colors;
     let any_color = colors.any_enabled();
     if any_color {
-        println!("  colors          : date={} title={} body={} tags={} contains={}",
+        println!("  colors          : date={} title={} body={} tags={} search={}",
             colors.date, colors.title, colors.body, colors.tags, colors.search);
     } else {
         println!("  colors          : none");
