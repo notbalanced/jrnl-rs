@@ -26,7 +26,7 @@ pub struct Cli {
     pub template: Option<String>,
 
     /// The entry text to add (date prefix optional, e.g. "yesterday: text")
-    #[arg(allow_hyphen_values = true, num_args = 0.., trailing_var_arg = true)]
+    #[arg(allow_hyphen_values = false, num_args = 0.., trailing_var_arg = true)]
     pub text: Vec<String>,
 
     // ---- Searching ----
