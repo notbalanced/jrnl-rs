@@ -1,3 +1,5 @@
+//use std::string;
+
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 /// Parse a date/time expression used in -on/-from/-to and entry date prefixes.
@@ -91,45 +93,26 @@ fn split_trailing_time(s: &str) -> (&str, Option<NaiveTime>) {
 /// Parse a single time-of-day token: "10am", "10pm", "10:30am", "10:30pm",
 /// "22:00", "9:00". Returns None if the token doesn't look like a time.
 fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
-    let s = s.trim();
-    if s.is_empty() {
+    let mut cleaned = s.replace(' ',"").to_lowercase();
+    if cleaned.is_empty() {
         return None;
     }
 
-    // 12-hour with am/pm, optional minutes: "10am", "10:30pm"
-    if let Some(meridiem_idx) = s.find(|c: char| c == 'a' || c == 'p') {
-        // ensure the suffix is exactly "am" or "pm"
-        let suffix = &s[meridiem_idx..];
-        if suffix == "am" || suffix == "pm" {
-            let time_str = &s[..meridiem_idx];
-            let (hour, minute) = if let Some((h, m)) = time_str.split_once(':') {
-                (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)
-            } else {
-                (time_str.parse::<u32>().ok()?, 0)
-            };
-            if hour == 0 || hour > 12 || minute > 59 {
-                return None;
-            }
-            let hour24 = match (hour, suffix) {
-                (12, "am") => 0,
-                (12, "pm") => 12,
-                (h, "am") => h,
-                (h, "pm") => h + 12,
-                _ => unreachable!(),
-            };
-            return NaiveTime::from_hms_opt(hour24, minute, 0);
-        }
-        return None;
+    if (cleaned.ends_with("am") || cleaned.ends_with("pm")) && !cleaned.contains(':') {
+        cleaned = cleaned.replace("am",":00am").replace("pm",":00pm");
     }
 
-    // 24-hour "HH:MM"
-    if let Some((h, m)) = s.split_once(':') {
-        let hour = h.parse::<u32>().ok()?;
-        let minute = m.parse::<u32>().ok()?;
-        if hour > 23 || minute > 59 {
-            return None;
+    let time_formats = [
+        "%H:%M", // 24-hour "HH:MM"
+        "%I:%M%p", // 12-hour with am/pm, "10:00am" (convrted from "10am" above)
+        "%k:%M", // 24-hour "H:MM" (single-digit hour)
+        "%l:%M", // 12-hour "H:MM" (single-digit hour
+    ];
+
+    for fmt in &time_formats {
+        if let Ok(t) = NaiveTime::parse_from_str(&cleaned, fmt) {
+            return Some(t);
         }
-        return NaiveTime::from_hms_opt(hour, minute, 0);
     }
 
     None
@@ -254,6 +237,20 @@ pub fn split_date_prefix(text: &str) -> (Option<NaiveDateTime>, &str) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_parse_time_of_day() {
+        let t: NaiveTime = parse_time_of_day("10am").unwrap();
+        assert_eq!(t, NaiveTime::from_hms_opt(10, 0, 0).unwrap());
+        assert_eq!(parse_time_of_day("10:30pm").unwrap(), 
+                    NaiveTime::from_hms_opt(22, 30, 0).unwrap());
+        assert_eq!(parse_time_of_day("07:00").unwrap(), 
+                    NaiveTime::from_hms_opt(7, 0, 0).unwrap());
+        assert_eq!(parse_time_of_day("17:47").unwrap(), 
+                    NaiveTime::from_hms_opt(17, 47, 0).unwrap());
+        assert_eq!(parse_time_of_day("9:33am").unwrap(), 
+                    NaiveTime::from_hms_opt(09, 33, 0).unwrap());
+
+    }
     #[test]
     fn test_iso_date() {
         let d = parse_date("2024-01-15").unwrap();
